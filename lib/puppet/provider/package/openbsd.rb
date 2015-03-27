@@ -20,47 +20,46 @@ Puppet::Type.type(:package).provide :openbsd, :parent => Puppet::Provider::Packa
   has_feature :install_options
   has_feature :uninstall_options
   has_feature :upgradeable
-  has_feature :flavorable
-
-  mk_resource_methods
 
   def self.instances
-    # our regex for matching pkg_info output
-    regex = /^(.*)-(\d[^-]*)[-]?(\w*)(.*)$/
-    fields = [:name, :ensure, :flavor ]
+    packages = []
 
     begin
-      packages = pkginfo('-a')
-      packages.split("\n").collect do |package|
-        if match = regex.match(package.split[0])
-	  new( :name => match.captures[0],
-               :ensure => match.captures[1],
-               :flavor => match.captures[2],
-          )
-        else
-          unless line =~ /Updating the pkgdb/
-            # Print a warning on lines we can't match, but move
-            # on, since it should be non-fatal
-            warning("Failed to match line #{line}")
+      execpipe(listcmd) do |process|
+        # our regex for matching pkg_info output
+        regex = /^(.*)-(\d[^-]*)[-]?(\w*)(.*)$/
+        fields = [:name, :ensure, :flavor ]
+        hash = {}
+
+        # now turn each returned line into a package object
+        process.each_line { |line|
+          if match = regex.match(line.split[0])
+            fields.zip(match.captures) { |field,value|
+              hash[field] = value
+            }
+
+            hash[:provider] = self.name
+
+            packages << new(hash)
+            hash = {}
+          else
+            unless line =~ /Updating the pkgdb/
+              # Print a warning on lines we can't match, but move
+              # on, since it should be non-fatal
+              warning("Failed to match line #{line}")
+            end
           end
-        end
+        }
       end
+
+      return packages
     rescue Puppet::ExecutionFailure
       return nil
     end
   end
 
-  def self.prefetch(resources)
-    packages = instances
-    resources.keys.each do |name|
-      if provider = packages.find{ |pkg| pkg.name == name }
-        resources[name].provider = provider
-      end
-    end
-  end
-
-  def flavor=(value)
-    install
+  def self.listcmd
+    [command(:pkginfo), "-a"]
   end
 
   def latest
@@ -156,12 +155,11 @@ Puppet::Type.type(:package).provide :openbsd, :parent => Puppet::Provider::Packa
       full_name = @resource[:source]
     end
 
-    cmd << '-r'
     cmd << install_options
     cmd << full_name
 
     if latest
-      cmd.unshift('-z')
+      cmd.unshift('-rz')
     end
 
     Puppet::Util.withenv(e_vars) { pkgadd cmd.flatten.compact }
