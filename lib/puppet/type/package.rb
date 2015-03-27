@@ -7,7 +7,7 @@ require 'puppet/parameter/package_options'
 require 'puppet/parameter/boolean'
 
 module Puppet
-  Type.newtype(:package) do
+  newtype(:package) do
     @doc = "Manage packages.  There is a basic dichotomy in package
       support right now:  Some package types (e.g., yum and apt) can
       retrieve their own package files, while others (e.g., rpm and sun)
@@ -20,19 +20,10 @@ module Puppet
       requires in order to function, and you must meet those requirements
       to use a given provider.
 
-      You can declare multiple package resources with the same `name`, as long
-      as they specify different providers and have unique titles.
-
-      Note that you must use the _title_ to make a reference to a package
-      resource; `Package[<NAME>]` is not a synonym for `Package[<TITLE>]` like
-      it is for many other resource types.
-
       **Autorequires:** If Puppet is managing the files specified as a
       package's `adminfile`, `responsefile`, or `source`, the package
       resource will autorequire those files."
 
-    feature :reinstallable, "The provider can reinstall packages.",
-      :methods => [:reinstall]
     feature :installable, "The provider can install packages.",
       :methods => [:install]
     feature :uninstallable, "The provider can uninstall packages.",
@@ -65,6 +56,7 @@ module Puppet
       provider-specific.",
       :methods => [:package_settings_insync?, :package_settings, :package_settings=]
     feature :virtual_packages, "The provider accepts virtual package names for install and uninstall."
+    feature :flavorable, "The provider accepts package flavors."
 
     ensurable do
       desc <<-EOT
@@ -182,10 +174,6 @@ module Puppet
           # supports providers that can have multiple versions installed
           when *Array(is)
             return true
-          else
-            # We have version numbers, and no match. If the provider has
-            # additional logic, run it here.
-            return provider.insync?(is) if provider.respond_to?(:insync?)
           end
         }
 
@@ -210,9 +198,9 @@ module Puppet
     newparam(:name) do
       desc "The package name.  This is the name that the packaging
       system uses internally, which is sometimes (especially on Solaris)
-      a name that is basically useless to humans.  If a package goes by
-      several names, you can use a single title and then set the name
-      conditionally:
+      a name that is basically useless to humans.  If you want to
+      abstract package installation, then you can use aliases to provide
+      a common name to packages:
 
           # In the 'openssl' class
           $ssl = $operatingsystem ? {
@@ -220,9 +208,11 @@ module Puppet
             default => openssl
           }
 
-          package { 'openssl':
-            name   => $ssl,
-            ensure => installed
+          # It is not an error to set an alias to the same value as the
+          # object name.
+          package { $ssl:
+            ensure => installed,
+            alias  => openssl
           }
 
           . etc. .
@@ -232,10 +222,12 @@ module Puppet
             default => openssh
           }
 
-          package { 'openssh':
-            name    => $ssh
+          # Use the alias to specify a dependency, rather than
+          # having another selector to figure it out again.
+          package { $ssh:
             ensure  => installed,
-            require => Package['openssl']
+            alias   => openssh,
+            require => Package[openssl]
           }
 
       "
@@ -246,37 +238,6 @@ module Puppet
           raise ArgumentError, "Name must be a String not #{value.class}"
         end
       end
-    end
-
-    # We call providify here so that we can set provider as a namevar.
-    # Normally this method is called after newtype finishes constructing this
-    # Type class.
-    providify
-    paramclass(:provider).isnamevar
-
-    # We have more than one namevar, so we need title_patterns. However, we
-    # cheat and set the patterns to map to name only and completely ignore
-    # provider. So far, the logic that determines uniqueness appears to just
-    # "Do The Right Thing™" when the provider is explicitly set by the user.
-    #
-    # The following resources will be seen as uniqe by puppet:
-    #
-    #     # Uniqueness Key: ['mysql', nil]
-    #     package{'mysql': }
-    #
-    #     # Uniqueness Key: ['mysql', 'gem']
-    #     package{'gem-mysql':
-    #       name     => 'mysql,
-    #       provider => gem
-    #     }
-    #
-    # This does not handle the case where providers like 'yum' and 'rpm' should
-    # clash. Also, declarations that implicitly use the default provider will
-    # clash with those that explicitly use the default.
-    def self.title_patterns
-      # This is the default title pattern for all types, except hard-wired to
-      # set only name.
-      [ [ /(.*)/m, [ [:name] ] ] ]
     end
 
     newproperty(:package_settings, :required_features=>:package_settings) do
@@ -346,19 +307,10 @@ module Puppet
     end
 
     newparam(:source) do
-      desc "Where to find the package file. This is only used by providers that don't
-        automatically download packages from a central repository. (For example:
-        the `yum` and `apt` providers ignore this attribute, but the `rpm` and
-        `dpkg` providers require it.)
-
-        Different providers accept different values for `source`. Most providers
-        accept paths to local files stored on the target system. Some providers
-        may also accept URLs or network drive paths. Puppet will not
-        automatically retrieve source files for you, and usually just passes the
-        value of `source` to the package installation command.
-
-        You can use a `file` resource if you need to manually copy package files
-        to the target system."
+      desc "Where to find the actual package. This must be a local file
+        (or on a network file system) or a URL that your specific
+        packaging type understands; Puppet will not retrieve files for you,
+        although you can manage packages as `file` resources."
 
       validate do |value|
         provider.validate_source(value)
@@ -375,14 +327,10 @@ module Puppet
 
     newparam(:adminfile) do
       desc "A file containing package defaults for installing packages.
-
-        This attribute is only used on Solaris. Its value should be a path to a
-        local file stored on the target system. Solaris's package tools expect
-        either an absolute file path or a relative path to a file in
-        `/var/sadm/install/admin`.
-
-        The value of `adminfile` will be passed directly to the `pkgadd` or
-        `pkgrm` command with the `-a <ADMINFILE>` option."
+        This is currently only used on Solaris.  The value will be
+        validated according to system rules, which in the case of
+        Solaris means that it should either be a fully qualified path
+        or it should be in `/var/sadm/install/admin`."
     end
 
     newparam(:responsefile) do
@@ -424,7 +372,7 @@ module Puppet
       newvalues(:true, :false)
     end
 
-    newparam(:flavor) do
+    newproperty(:flavor, :required_features => :flavorable) do
       desc "OpenBSD supports 'flavors', which are further specifications for
         which type of package you want."
     end
@@ -478,7 +426,11 @@ module Puppet
     newparam(:allow_virtual, :boolean => true, :parent => Puppet::Parameter::Boolean, :required_features => :virtual_packages) do
       desc 'Specifies if virtual package names are allowed for install and uninstall.'
 
-      defaultto true
+      # In a future release, this should be defaulted to true and the below deprecation warning removed
+      defaultto do
+        Puppet.deprecation_warning('The package type\'s allow_virtual parameter will be changing its default value from false to true in a future release. If you do not want to allow virtual packages, please explicitly set allow_virtual to false.') unless value
+        false
+      end
     end
 
     autorequire(:file) do
@@ -510,42 +462,6 @@ module Puppet
 
     def present?(current_values)
       super && current_values[:ensure] != :purged
-    end
-
-    # This parameter exists to ensure backwards compatibility is preserved.
-    # See https://github.com/puppetlabs/puppet/pull/2614 for discussion.
-    # If/when a metaparameter for controlling how arbitrary resources respond
-    # to refreshing is created, that will supersede this, and this will be
-    # deprecated.
-    newparam(:reinstall_on_refresh) do
-      desc "Whether this resource should respond to refresh events (via `subscribe`,
-        `notify`, or the `~>` arrow) by reinstalling the package. Only works for
-        providers that support the `reinstallable` feature.
-
-        This is useful for source-based distributions, where you may want to
-        recompile a package if the build options change.
-
-        If you use this, be careful of notifying classes when you want to restart
-        services. If the class also contains a refreshable package, doing so could
-        cause unnecessary re-installs.
-
-        Defaults to `false`."
-      newvalues(:true, :false)
-
-      defaultto :false
-    end
-
-    # When a refresh event is triggered, calls reinstall on providers
-    # that support the reinstall_on_refresh parameter.
-    def refresh
-      if provider.reinstallable? &&
-        @parameters[:reinstall_on_refresh].value == :true &&
-        @parameters[:ensure].value != :purged &&
-        @parameters[:ensure].value != :absent &&
-        @parameters[:ensure].value != :held
-
-        provider.reinstall
-      end
     end
   end
 end

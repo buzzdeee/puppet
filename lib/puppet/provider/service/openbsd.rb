@@ -9,6 +9,15 @@ Puppet::Type.type(:service).provide :openbsd, :parent => :init do
   has_feature :flaggable
 
   def startcmd
+    if @resource[:flags] and flags != @resource[:flags]
+      # Unfortunately, the startcmd gets called, before
+      # the service is enabled (in case its supposed to be enabled).
+      # Setting flags via rcctl is only possible, when the service is enabled
+      # In case the service is not to be enabled, it will be automatically
+      # disabled later in the same puppet run.
+      self.enable
+      self.flags = @resource[:flags]
+    end
     [command(:rcctl), '-f', :start, @resource[:name]]
   end
 
@@ -34,6 +43,7 @@ Puppet::Type.type(:service).provide :openbsd, :parent => :init do
       execpipe([command(:rcctl), :getall]) do |process|
         process.each_line do |line|
           match = /^(.*?)(?:_flags)?=(.*)$/.match(line)
+          next if match[1].match(/.*?_timeout$|.*?_user$/)
           attributes_hash = {
             :name      => match[1],
             :flags     => match[2],
@@ -51,15 +61,14 @@ Puppet::Type.type(:service).provide :openbsd, :parent => :init do
   end
 
   def enabled?
-    output = execute([command(:rcctl), "get", @resource[:name], "status"],
+    output = Puppet::Util::Execution.execute([command(:rcctl), "get", @resource[:name], "status"],
                      :failonfail => false, :combine => false, :squelch => false)
-
-    if output.exitstatus == 1
-      self.debug("Is disabled")
-      return :false
-    else
+    if output.exitstatus == 0
       self.debug("Is enabled")
       return :true
+    else
+      self.debug("Is disabled")
+      return :false
     end
   end
 
