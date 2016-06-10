@@ -33,15 +33,11 @@
 #      rc_exit          exit appropriate to overall rc status
 [ -f /etc/rc.status ] && . /etc/rc.status
 [ -f /etc/sysconfig/puppet ] && . /etc/sysconfig/puppet
-lockfile=${LOCKFILE-/var/lock/subsys/puppet}
-pidfile=${PIDFILE-/var/run/puppetlabs/agent.pid}
-puppetd=${PUPPETD-/usr/bin/puppet}
-RETVAL=0
+lockfile=/var/lock/subsys/puppet
+pidfile=/var/run/puppetlabs/agent.pid
+puppetd=/opt/puppetlabs/puppet/bin/puppet
 
 PUPPET_OPTS="agent"
-[ -n "${PUPPET_SERVER}" ] && PUPPET_OPTS="${PUPPET_OPTS} --server=${PUPPET_SERVER}"
-[ -n "$PUPPET_LOG" ] && PUPPET_OPTS="${PUPPET_OPTS} --logdest=${PUPPET_LOG}"
-[ -n "$PUPPET_PORT" ] && PUPPET_OPTS="${PUPPET_OPTS} --port=${PUPPET_PORT}"
 
 # First reset status of this service
 rc_reset
@@ -66,9 +62,18 @@ case "$1" in
         ## Start daemon with startproc(8). If this fails
         ## the echo return value is set appropriate.
 
-        # startproc should return 0, even if service is
-        # already running to match LSB spec.
-        startproc -p ${pidfile} $puppetd ${PUPPET_OPTS} ${PUPPET_EXTRA_OPTS} && touch ${lockfile}
+        ## This accounts for the behavior of startproc on sles 10.
+        ## Check to see if a running process matches the contents
+        ## of the pidfile, and do nothing if true. Otherwise
+        ## force a process start
+        if [ -f "${pidfile}" ]; then
+            PID=$(cat "$pidfile")
+            if [ "$PID" -eq $(pgrep -f "$puppetd") ] ; then
+                rc_status -v
+                rc_exit
+            fi
+        fi
+        startproc -f -w -p "${pidfile}" "${puppetd}" "${PUPPET_OPTS}" ${PUPPET_EXTRA_OPTS} && touch "${lockfile}"
         # Remember status and be verbose
         rc_status -v
         ;;
@@ -77,12 +82,12 @@ case "$1" in
         ## Stop daemon with killproc(8) and if this fails
         ## set echo the echo return value.
 
-        killproc -QUIT -p ${pidfile} $puppetd && rm -f ${lockfile} ${pidfile}
+        killproc -QUIT -p "${pidfile}" "${puppetd}" && rm -f "${lockfile}" "${pidfile}"
 
         # Remember status and be verbose
         rc_status -v
         ;;
-    try-restart)
+    try-restart|condrestart)
         ## Stop the service and if this succeeds (i.e. the
         ## service was running before), start it again.
         $0 status >/dev/null &&  $0 restart
@@ -99,23 +104,10 @@ case "$1" in
         # Remember status and be quiet
         rc_status
         ;;
-    force-reload)
-        ## Signal the daemon to reload its config. Most daemons
-        ## do this on signal 1 (SIGHUP).
-        ## If it does not support it, restart.
-
-        echo -n "Reload service puppet"
-        ## if it supports it:
-        killproc -HUP -p ${pidfile} $puppetd
-        rc_status -v
-        ;;
-    reload)
-        ## Like force-reload, but if daemon does not support
-        ## signalling, do nothing (!)
-
-        # If it supports signalling:
-        echo -n "Reload puppet services."
-        killproc -HUP -p ${pidfile} $puppetd
+    reload|force-reload)
+        # Reload the service by sending the HUP signal
+        echo -n "Reloading puppet service: "
+        killproc -HUP -p "${pidfile}" "${puppetd}"
         rc_status -v
         ;;
     status)
@@ -130,15 +122,20 @@ case "$1" in
         # 3 - service not running
 
         # NOTE: checkproc returns LSB compliant status values.
-        checkproc -p ${pidfile} $puppetd
-        rc_status -v
+        if [ -f "${pidfile}" ]; then
+            checkproc -p "${pidfile}" "${puppetd}"
+            rc_status -v
+        else
+            rc_failed 3
+            rc_status -v
+        fi
         ;;
     once)
         shift
-        $puppetd ${PUPPET_OPTS} --onetime ${PUPPET_EXTRA_OPTS} $@
+        $puppetd "${PUPPET_OPTS}" --onetime ${PUPPET_EXTRA_OPTS} $@
         ;;
     *)
-        echo "Usage: $0 {start|stop|status|try-restart|restart|force-reload|reload|once}"
+        echo "Usage: $0 {start|stop|status|try-restart|condrestart|restart|force-reload|reload|once}"
         exit 1
 esac
 rc_exit

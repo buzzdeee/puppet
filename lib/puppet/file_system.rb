@@ -122,8 +122,21 @@ module Puppet::FileSystem
   #
   # @api public
   #
-  def self.read(path)
-    @impl.read(assert_path(path))
+  def self.read(path, opts = {})
+    @impl.read(assert_path(path), opts)
+  end
+
+  # Read a file keeping the original line endings intact. This
+  # attempts to open files using binary mode using some encoding
+  # overrides and falling back to IO.read when none of the
+  # encodings are valid.
+  #
+  # @return [String] The contents of the file
+  #
+  # @api public
+  #
+  def self.read_preserve_line_endings(path)
+    @impl.read_preserve_line_endings(assert_path(path))
   end
 
   # @return [String] The binary contents of the file

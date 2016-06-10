@@ -2,12 +2,15 @@ require 'puppet/node'
 require 'puppet/resource/catalog'
 require 'puppet/indirector/code'
 require 'puppet/util/profiler'
+require 'puppet/util/checksums'
 require 'yaml'
+require 'uri'
 
 class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   desc "Compiles catalogs on demand using Puppet's compiler."
 
   include Puppet::Util
+  include Puppet::Util::Checksums
 
   attr_accessor :code
 
@@ -47,7 +50,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     node = node_from_request(request)
     node.trusted_data = Puppet.lookup(:trusted_information) { Puppet::Context::TrustedInformation.local(node) }.to_h
 
-    if catalog = compile(node)
+    if catalog = compile(node, request.options)
       return catalog
     else
       # This shouldn't actually happen; we should either return
@@ -78,36 +81,220 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
   # Add any extra data necessary to the node.
   def add_node_data(node)
     # Merge in our server-side facts, so they can be used during compilation.
-    node.merge(@server_facts)
+    node.add_server_facts(@server_facts)
+  end
+
+  # Determine which checksum to use; if agent_checksum_type is not nil,
+  # use the first entry in it that is also in known_checksum_types.
+  # If no match is found, return nil.
+  def common_checksum_type(agent_checksum_type)
+    if agent_checksum_type
+      agent_checksum_types = agent_checksum_type.split('.').map {|type| type.to_sym}
+      checksum_type = agent_checksum_types.drop_while do |type|
+        not known_checksum_types.include? type
+      end.first
+    end
+    checksum_type
+  end
+
+  def get_content_uri(metadata, source, environment_path)
+    # The static file content server doesn't know how to expand mountpoints, so
+    # we need to do that ourselves from the actual system path of the source file.
+    # This does that, while preserving any user-specified server or port.
+    source_path = Pathname.new(metadata.full_path)
+    path = source_path.relative_path_from(environment_path).to_s
+    source_as_uri = URI.parse(URI.escape(source))
+    server = source_as_uri.host
+    port = ":#{source_as_uri.port}" if source_as_uri.port
+    return "puppet://#{server}#{port}/#{path}"
+  end
+
+  # Helper method to decide if a file resource's metadata can be inlined.
+  # Also used to profile/log reasons for not inlining.
+  def inlineable?(resource, sources)
+    case
+      when resource[:ensure] == 'absent'
+        return Puppet::Util::Profiler.profile("Not inlining absent resource", [:compiler, :static_compile_inlining, :skipped_file_metadata, :absent]) { false }
+      when sources.empty?
+        return Puppet::Util::Profiler.profile("Not inlining resource without sources", [:compiler, :static_compile_inlining, :skipped_file_metadata, :no_sources]) { false }
+      when (not (sources.all? {|source| source =~ /^puppet:/}))
+        return Puppet::Util::Profiler.profile("Not inlining unsupported source scheme", [:compiler, :static_compile_inlining, :skipped_file_metadata, :unsupported_scheme]) { false }
+      else
+        return true
+    end
+  end
+
+  # Return true if metadata is inlineable, meaning the request's source is
+  # for the 'modules' mount and the resolved path is of the form:
+  #   $codedir/environments/$environment/*/*/files/**
+  def inlineable_metadata?(metadata, source, environment_path)
+    source_as_uri = URI.parse(URI.escape(source))
+    location = Puppet::Module::FILETYPES['files']
+
+    !!(source_as_uri.path =~ /^\/modules\// &&
+       metadata.full_path =~ /#{environment_path}[^\/]+\/[^\/]+\/#{location}\/.+/)
+  end
+
+  # Helper method to log file resources that could not be inlined because they
+  # fall outside of an environment.
+  def log_file_outside_environment
+    Puppet::Util::Profiler.profile("Not inlining file outside environment", [:compiler, :static_compile_inlining, :skipped_file_metadata, :file_outside_environment]) { true }
+  end
+
+  # Helper method to log file resources that were successfully inlined.
+  def log_metadata_inlining
+    Puppet::Util::Profiler.profile("Inlining file metadata", [:compiler, :static_compile_inlining, :inlined_file_metadata]) { true }
+  end
+
+  # Inline file metadata for static catalogs
+  # Initially restricted to files sourced from codedir via puppet:/// uri.
+  def inline_metadata(catalog, checksum_type)
+    environment_path = Pathname.new File.join(Puppet[:environmentpath], catalog.environment, "")
+    list_of_resources = catalog.resources.find_all { |res| res.type == "File" }
+
+    # TODO: get property/parameter defaults if entries are nil in the resource
+    # For now they're hard-coded to match the File type.
+
+    file_metadata = {}
+    list_of_resources.each do |resource|
+      sources = [resource[:source]].flatten.compact
+      next unless inlineable?(resource, sources)
+
+      # both need to handle multiple sources
+      if resource[:recurse] == true || resource[:recurse] == 'true' || resource[:recurse] == 'remote'
+        # Construct a hash mapping sources to arrays (list of files found recursively) of metadata
+        options = {
+          :environment        => catalog.environment_instance,
+          :links              => resource[:links] ? resource[:links].to_sym : :manage,
+          :checksum_type      => resource[:checksum] ? resource[:checksum].to_sym : checksum_type.to_sym,
+          :source_permissions => resource[:source_permissions] ? resource[:source_permissions].to_sym : :ignore,
+          :recurse            => true,
+          :recurselimit       => resource[:recurselimit],
+          :ignore             => resource[:ignore],
+        }
+
+        sources_in_environment = true
+
+        source_to_metadatas = {}
+        sources.each do |source|
+          source = Puppet::Type.type(:file).attrclass(:source).normalize(source)
+
+          if list_of_data = Puppet::FileServing::Metadata.indirection.search(source, options)
+            basedir_meta = list_of_data.find {|meta| meta.relative_path == '.'}
+            devfail "FileServing::Metadata search should always return the root search path" if basedir_meta.nil?
+
+            if ! inlineable_metadata?(basedir_meta, source,  environment_path)
+              # If any source is not in the environment path, skip inlining this resource.
+              log_file_outside_environment
+              sources_in_environment = false
+              break
+            end
+
+            base_content_uri = get_content_uri(basedir_meta, source, environment_path)
+            list_of_data.each do |metadata|
+              if metadata.relative_path == '.'
+                metadata.content_uri = base_content_uri
+              else
+                metadata.content_uri = "#{base_content_uri}/#{metadata.relative_path}"
+              end
+            end
+
+            source_to_metadatas[source] = list_of_data
+            # Optimize for returning less data if sourceselect is first
+            if resource[:sourceselect] == 'first' || resource[:sourceselect].nil?
+              break
+            end
+          end
+        end
+
+        if sources_in_environment && !source_to_metadatas.empty?
+          log_metadata_inlining
+          catalog.recursive_metadata[resource.title] = source_to_metadatas
+        end
+      else
+        options = {
+          :environment        => catalog.environment_instance,
+          :links              => resource[:links] ? resource[:links].to_sym : :manage,
+          :checksum_type      => resource[:checksum] ? resource[:checksum].to_sym : checksum_type.to_sym,
+          :source_permissions => resource[:source_permissions] ? resource[:source_permissions].to_sym : :ignore
+        }
+
+        metadata = nil
+        sources.each do |source|
+          source = Puppet::Type.type(:file).attrclass(:source).normalize(source)
+
+          if data = Puppet::FileServing::Metadata.indirection.find(source, options)
+            metadata = data
+            metadata.source = source
+            break
+          end
+        end
+
+        raise "Could not get metadata for #{resource[:source]}" unless metadata
+
+        if inlineable_metadata?(metadata, metadata.source,  environment_path)
+          metadata.content_uri = get_content_uri(metadata, metadata.source, environment_path)
+          log_metadata_inlining
+
+          # If the file is in the environment directory, we can safely inline
+          catalog.metadata[resource.title] = metadata
+        else
+          # Log a profiler event that we skipped this file because it is not in an environment.
+          log_file_outside_environment
+        end
+      end
+    end
   end
 
   # Compile the actual catalog.
-  def compile(node)
-    str = "Compiled catalog for #{node.name}"
+  def compile(node, options)
+    if node.environment && node.environment.static_catalogs? && options[:static_catalog] && options[:code_id]
+      # Check for errors before compiling the catalog
+      checksum_type = common_checksum_type(options[:checksum_type])
+      raise Puppet::Error, "Unable to find a common checksum type between agent '#{options[:checksum_type]}' and master '#{known_checksum_types}'." unless checksum_type
+    end
+
+    str = "Compiled %s for " % [checksum_type ? 'static catalog' : 'catalog']
+    str += node.name
     str += " in environment #{node.environment}" if node.environment
     config = nil
 
     benchmark(:notice, str) do
-      Puppet::Util::Profiler.profile(str, [:compiler, :compile, node.environment, node.name]) do
+      compile_type = checksum_type ? :static_compile : :compile
+      Puppet::Util::Profiler.profile(str, [:compiler, compile_type, node.environment, node.name]) do
         begin
-          config = Puppet::Parser::Compiler.compile(node)
+          config = Puppet::Parser::Compiler.compile(node, options[:code_id])
         rescue Puppet::Error => detail
           Puppet.err(detail.to_s) if networked?
           raise
+        ensure
+          Puppet::Type.clear_misses unless Puppet[:always_retry_plugins]
+        end
+
+        if checksum_type && config.is_a?(model)
+          str = "Inlined resource metadata into static catalog for #{node.name}"
+          str += " in environment #{node.environment}" if node.environment
+          benchmark(:notice, str) do
+            Puppet::Util::Profiler.profile(str, [:compiler, :static_compile_postprocessing, node.environment, node.name]) do
+              inline_metadata(config, checksum_type)
+            end
+          end
         end
       end
     end
+
 
     config
   end
 
   # Turn our host name into a node object.
-  def find_node(name, environment, transaction_uuid)
+  def find_node(name, environment, transaction_uuid, configured_environment)
     Puppet::Util::Profiler.profile("Found node information", [:compiler, :find_node]) do
       node = nil
       begin
         node = Puppet::Node.indirection.find(name, :environment => environment,
-                                             :transaction_uuid => transaction_uuid)
+                                             :transaction_uuid => transaction_uuid,
+                                             :configured_environment => configured_environment)
       rescue => detail
         message = "Failed when searching for node #{name}: #{detail}"
         Puppet.log_exception(detail, message)
@@ -142,7 +329,7 @@ class Puppet::Resource::Catalog::Compiler < Puppet::Indirector::Code
     # node's catalog with only one certificate and a modification to auth.conf
     # If no key is provided we can only compile the currently connected node.
     name = request.key || request.node
-    if node = find_node(name, request.environment, request.options[:transaction_uuid])
+    if node = find_node(name, request.environment, request.options[:transaction_uuid], request.options[:configured_environment])
       return node
     end
 

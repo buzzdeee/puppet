@@ -41,12 +41,12 @@ describe 'Puppet::Pops::Impl::EvaluatorImpl' do
 
       it "access to global names works in local scope" do
         top_scope_block     = block( var('a').set(literal(2)+literal(2)))
-        local_scope_block   = block( var('a').set(var('::a')+literal(2)), var('::a'))
+        local_scope_block   = block( var('a').set(literal(100)), var('b').set(var('::a')+literal(2)), var('b'))
         expect(evaluate_l(top_scope_block, local_scope_block)).to eq(6)
       end
 
       it "can not change a variable value in same scope" do
-        expect { evaluate_l(block(var('a').set(10), var('a').set(20))) }.to raise_error(/Cannot reassign variable a/)
+        expect { evaluate_l(block(var('a').set(10), var('a').set(20))) }.to raise_error(/Cannot reassign variable '\$a'/)
       end
 
       context "access to numeric variables" do

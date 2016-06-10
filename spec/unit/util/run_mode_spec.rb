@@ -16,16 +16,16 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.conf_dir).to eq(File.expand_path('/etc/puppetlabs/puppet')) }
       end
 
-      it "has confdir ~/.puppet when run as non-root" do
-        as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path('~/.puppet')) }
+      it "has confdir ~/.puppetlabs/etc/puppet when run as non-root" do
+        as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path('~/.puppetlabs/etc/puppet')) }
       end
 
       context "master run mode" do
         before do
           @run_mode = Puppet::Util::UnixRunMode.new('master')
         end
-        it "has confdir ~/.puppet when run as non-root and master run mode (#16337)" do
-          as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path('~/.puppet')) }
+        it "has confdir ~/.puppetlabs/etc/puppet when run as non-root and master run mode" do
+          as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path('~/.puppetlabs/etc/puppet')) }
         end
       end
 
@@ -43,8 +43,8 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.code_dir).to eq(File.expand_path('/etc/puppetlabs/code')) }
       end
 
-      it "has codedir ~/.puppet/code when run as non-root" do
-        as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path('~/.puppet/code')) }
+      it "has codedir ~/.puppetlabs/etc/code when run as non-root" do
+        as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path('~/.puppetlabs/etc/code')) }
       end
 
       context "master run mode" do
@@ -52,8 +52,8 @@ describe Puppet::Util::RunMode do
           @run_mode = Puppet::Util::UnixRunMode.new('master')
         end
 
-        it "has codedir ~/.puppet/code when run as non-root and master run mode" do
-          as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path('~/.puppet/code')) }
+        it "has codedir ~/.puppetlabs/etc/code when run as non-root and master run mode" do
+          as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path('~/.puppetlabs/etc/code')) }
         end
       end
 
@@ -71,8 +71,8 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.var_dir).to eq(File.expand_path('/opt/puppetlabs/puppet/cache')) }
       end
 
-      it "has vardir ~/.puppet/var when run as non-root" do
-        as_non_root { expect(@run_mode.var_dir).to eq(File.expand_path('~/.puppet/var')) }
+      it "has vardir ~/.puppetlabs/opt/puppet/cache when run as non-root" do
+        as_non_root { expect(@run_mode.var_dir).to eq(File.expand_path('~/.puppetlabs/opt/puppet/cache')) }
       end
 
       it "fails when asking for the var_dir as non-root and there is no $HOME" do
@@ -86,14 +86,14 @@ describe Puppet::Util::RunMode do
 
     describe "#log_dir" do
       describe "when run as root" do
-        it "has logdir /var/log/puppetlabs" do
-          as_root { expect(@run_mode.log_dir).to eq(File.expand_path('/var/log/puppetlabs')) }
+        it "has logdir /var/log/puppetlabs/puppet" do
+          as_root { expect(@run_mode.log_dir).to eq(File.expand_path('/var/log/puppetlabs/puppet')) }
         end
       end
 
       describe "when run as non-root" do
-        it "has default logdir ~/.puppet/var/log" do
-          as_non_root { expect(@run_mode.log_dir).to eq(File.expand_path('~/.puppet/var/log')) }
+        it "has default logdir ~/.puppetlabs/var/log" do
+          as_non_root { expect(@run_mode.log_dir).to eq(File.expand_path('~/.puppetlabs/var/log')) }
         end
 
         it "fails when asking for the log_dir and there is no $HOME" do
@@ -114,8 +114,8 @@ describe Puppet::Util::RunMode do
       end
 
       describe "when run as non-root" do
-        it "has default rundir ~/.puppet/var/run" do
-          as_non_root { expect(@run_mode.run_dir).to eq(File.expand_path('~/.puppet/var/run')) }
+        it "has default rundir ~/.puppetlabs/var/run" do
+          as_non_root { expect(@run_mode.run_dir).to eq(File.expand_path('~/.puppetlabs/var/run')) }
         end
 
         it "fails when asking for the run_dir and there is no $HOME" do
@@ -149,8 +149,8 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.conf_dir).to eq(File.expand_path(File.join(Dir::COMMON_APPDATA, "PuppetLabs", "puppet", "etc"))) }
       end
 
-      it "has confdir in ~/.puppet when run as non-root" do
-        as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path("~/.puppet")) }
+      it "has confdir in ~/.puppetlabs/etc/puppet when run as non-root" do
+        as_non_root { expect(@run_mode.conf_dir).to eq(File.expand_path("~/.puppetlabs/etc/puppet")) }
       end
 
       it "fails when asking for the conf_dir as non-root and there is no %HOME%, %HOMEDRIVE%, and %USERPROFILE%" do
@@ -171,8 +171,8 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.code_dir).to eq(File.expand_path(File.join(Dir::COMMON_APPDATA, "PuppetLabs", "code"))) }
       end
 
-      it "has codedir in ~/.puppet/code when run as non-root" do
-        as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path("~/.puppet/code")) }
+      it "has codedir in ~/.puppetlabs/etc/code when run as non-root" do
+        as_non_root { expect(@run_mode.code_dir).to eq(File.expand_path("~/.puppetlabs/etc/code")) }
       end
 
       it "fails when asking for the code_dir as non-root and there is no %HOME%, %HOMEDRIVE%, and %USERPROFILE%" do
@@ -193,8 +193,8 @@ describe Puppet::Util::RunMode do
         as_root { expect(@run_mode.var_dir).to eq(File.expand_path(File.join(Dir::COMMON_APPDATA, "PuppetLabs", "puppet", "cache"))) }
       end
 
-      it "has vardir in ~/.puppet/var when run as non-root" do
-        as_non_root { expect(@run_mode.var_dir).to eq(File.expand_path("~/.puppet/var")) }
+      it "has vardir in ~/.puppetlabs/opt/puppet/cache when run as non-root" do
+        as_non_root { expect(@run_mode.var_dir).to eq(File.expand_path("~/.puppetlabs/opt/puppet/cache")) }
       end
 
       it "fails when asking for the conf_dir as non-root and there is no %HOME%, %HOMEDRIVE%, and %USERPROFILE%" do
@@ -218,8 +218,8 @@ describe Puppet::Util::RunMode do
       end
 
       describe "when run as non-root" do
-        it "has default logdir ~/.puppet/var/log" do
-          as_non_root { expect(@run_mode.log_dir).to eq(File.expand_path('~/.puppet/var/log')) }
+        it "has default logdir ~/.puppetlabs/var/log" do
+          as_non_root { expect(@run_mode.log_dir).to eq(File.expand_path('~/.puppetlabs/var/log')) }
         end
 
         it "fails when asking for the log_dir and there is no $HOME" do
@@ -244,8 +244,8 @@ describe Puppet::Util::RunMode do
       end
 
       describe "when run as non-root" do
-        it "has default rundir ~/.puppet/var/run" do
-          as_non_root { expect(@run_mode.run_dir).to eq(File.expand_path('~/.puppet/var/run')) }
+        it "has default rundir ~/.puppetlabs/var/run" do
+          as_non_root { expect(@run_mode.run_dir).to eq(File.expand_path('~/.puppetlabs/var/run')) }
         end
 
         it "fails when asking for the run_dir and there is no $HOME" do
@@ -261,6 +261,30 @@ describe Puppet::Util::RunMode do
         end
       end
     end
+
+    describe "#without_env internal helper with UTF8 characters" do
+      let(:varname) { "\u16A0\u16C7\u16BB\u16EB\u16D2\u16E6\u16A6\u16EB\u16A0\u16B1\u16A9\u16A0\u16A2\u16B1\u16EB\u16A0\u16C1\u16B1\u16AA\u16EB\u16B7\u16D6\u16BB\u16B9\u16E6\u16DA\u16B3\u16A2\u16D7" }
+      let(:rune_utf8) { "\u16A0\u16C7\u16BB\u16EB\u16D2\u16E6\u16A6\u16EB\u16A0\u16B1\u16A9\u16A0\u16A2\u16B1\u16EB\u16A0\u16C1\u16B1\u16AA\u16EB\u16B7\u16D6\u16BB\u16B9\u16E6\u16DA\u16B3\u16A2\u16D7" }
+
+      before do
+        Puppet::Util::Windows::Process.set_environment_variable(varname, rune_utf8)
+      end
+
+      it "removes environment variables within the block with UTF8 name" do
+        without_env(varname) do
+          expect(ENV[varname]).to be(nil)
+        end
+      end
+
+      it "restores UTF8 characters in environment variable values" do
+        without_env(varname) do
+          Puppet::Util::Windows::Process.set_environment_variable(varname, 'bad value')
+        end
+
+        envhash = Puppet::Util::Windows::Process.get_environment_strings
+        expect(envhash[varname]).to eq(rune_utf8)
+      end
+    end
   end
 
   def as_root
@@ -274,11 +298,11 @@ describe Puppet::Util::RunMode do
   end
 
   def without_env(name, &block)
-    saved = ENV[name]
-    ENV.delete name
+    saved = Puppet::Util.get_env(name)
+    Puppet::Util.set_env(name, nil)
     yield
   ensure
-    ENV[name] = saved
+    Puppet::Util.set_env(name, saved)
   end
 
   def without_home(&block)

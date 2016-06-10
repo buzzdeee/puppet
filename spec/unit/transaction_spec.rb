@@ -365,6 +365,11 @@ describe Puppet::Transaction do
       expect(@transaction).to be_skip(@resource)
     end
 
+    it "should skip resources tagged with the skip tags" do
+      @transaction.stubs(:skip_tags?).returns(true)
+      expect(@transaction).to be_skip(@resource)
+    end
+
     it "should skip unscheduled resources" do
       @transaction.stubs(:scheduled?).returns(false)
       expect(@transaction).to be_skip(@resource)
@@ -719,6 +724,13 @@ describe Puppet::Transaction, " when determining tags" do
   it "should always convert assigned tags to an array" do
     @transaction.tags = "one::two"
     expect(@transaction).to be_tagged("one::two")
+  end
+
+  it "should tag one::two only as 'one::two' and not 'one', 'two', and 'one::two'" do
+    @transaction.tags = "one::two"
+    expect(@transaction).to be_tagged("one::two")
+    expect(@transaction).to_not be_tagged("one")
+    expect(@transaction).to_not be_tagged("two")
   end
 
   it "should accept a comma-delimited string" do

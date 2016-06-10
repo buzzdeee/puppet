@@ -5,9 +5,7 @@
 # expect that after correcting their actions, puppet will work correctly.
 test_name "Puppet manages its own configuration in a robust manner"
 
-confine :except, :platform => 'fedora-19'
-
-skip_test "JVM Puppet cannot change its user while running." if @options[:is_puppetserver]
+skip_test "JVM Puppet cannot change its user while running. PUP-6246" if @options[:is_puppetserver]
 
 # when owner/group works on windows for settings, this confine should be removed.
 confine :except, :platform => 'windows'
@@ -72,9 +70,8 @@ step "Remove system users" do
 end
 
 step "Ensure master fails to start when missing system user" do
-  on master, puppet('master'), :acceptable_exit_codes => [74] do
-    assert_match(/could not change to group "#{original_state[master][:group]}"/, result.output)
-    assert_match(/Could not change to user #{original_state[master][:user]}/, result.output)
+  on master, puppet('master', '--no-daemonize'), :acceptable_exit_codes => [74] do
+    assert_match(/Could not change user to #{original_state[master][:user]}/, result.output)
   end
 end
 

@@ -14,14 +14,13 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
   before :all do
     @sids = {
       :current_user => Puppet::Util::Windows::SID.name_to_sid(Puppet::Util::Windows::ADSI::User.current_user_name),
-      :system => Win32::Security::SID::LocalSystem,
-      :admin => Puppet::Util::Windows::SID.name_to_sid("Administrator"),
-      :administrators => Win32::Security::SID::BuiltinAdministrators,
+      :system => Puppet::Util::Windows::SID::LocalSystem,
+      :administrators => Puppet::Util::Windows::SID::BuiltinAdministrators,
       :guest => Puppet::Util::Windows::SID.name_to_sid("Guest"),
-      :users => Win32::Security::SID::BuiltinUsers,
-      :power_users => Win32::Security::SID::PowerUsers,
-      :none => Win32::Security::SID::Nobody,
-      :everyone => Win32::Security::SID::Everyone
+      :users => Puppet::Util::Windows::SID::BuiltinUsers,
+      :power_users => Puppet::Util::Windows::SID::PowerUsers,
+      :none => Puppet::Util::Windows::SID::Nobody,
+      :everyone => Puppet::Util::Windows::SID::Everyone
     }
     # The TCP/IP NetBIOS Helper service (aka 'lmhosts') has ended up
     # disabled on some VMs for reasons we couldn't track down. This
@@ -239,6 +238,24 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
               expect(ace.mask).to eq(klass::FILE_ALL_ACCESS)
               expect(ace).not_to be_inherited
             end
+
+            if Puppet::FileSystem.directory?(path)
+              system_aces.each do |ace|
+                expect(ace).to be_object_inherit
+                expect(ace).to be_container_inherit
+              end
+
+              # it's critically important that this file be default created
+              # and that this file not have it's owner / group / mode set by winsec
+              nested_file = File.join(path, 'nested_file')
+              File.new(nested_file, 'w').close
+
+              system_aces = winsec.get_aces_for_path_by_sid(nested_file, sids[:system])
+              # even when SYSTEM is the owner (in CI), there should be an inherited SYSTEM
+              expect(system_aces.any? do |ace|
+                ace.mask == klass::FILE_ALL_ACCESS && ace.inherited?
+              end).to be_truthy
+            end
           end
 
           describe "for modes that require deny aces" do
@@ -387,9 +404,14 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
         end
 
         describe "#owner=" do
+          it "should accept the guest sid" do
+            winsec.set_owner(sids[:guest], path)
+            expect(winsec.get_owner(path)).to eq(sids[:guest])
+          end
+
           it "should accept a user sid" do
-            winsec.set_owner(sids[:admin], path)
-            expect(winsec.get_owner(path)).to eq(sids[:admin])
+            winsec.set_owner(sids[:current_user], path)
+            expect(winsec.get_owner(path)).to eq(sids[:current_user])
           end
 
           it "should accept a group sid" do
@@ -407,14 +429,19 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
         end
 
         describe "#group=" do
+          it "should accept the test group" do
+            winsec.set_group(sids[:guest], path)
+            expect(winsec.get_group(path)).to eq(sids[:guest])
+          end
+
           it "should accept a group sid" do
             winsec.set_group(sids[:power_users], path)
             expect(winsec.get_group(path)).to eq(sids[:power_users])
           end
 
           it "should accept a user sid" do
-            winsec.set_group(sids[:admin], path)
-            expect(winsec.get_group(path)).to eq(sids[:admin])
+            winsec.set_group(sids[:current_user], path)
+            expect(winsec.get_group(path)).to eq(sids[:current_user])
           end
 
           it "should combine owner and group rights when they are the same sid" do
@@ -451,7 +478,7 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
             user = Puppet::Util::Windows::ADSI::User.create("puppet#{rand(10000)}")
             user.commit
             begin
-              sid = Puppet::Util::Windows::ADSI::User.new(user.name).sid.to_s
+              sid = Puppet::Util::Windows::ADSI::User.new(user.name).sid.sid
               winsec.set_owner(sid, path)
               winsec.set_mode(WindowsSecurityTester::S_IRWXU, path)
             ensure
@@ -467,7 +494,7 @@ describe "Puppet::Util::Windows::Security", :if => Puppet.features.microsoft_win
             group = Puppet::Util::Windows::ADSI::Group.create("puppet#{rand(10000)}")
             group.commit
             begin
-              sid = Puppet::Util::Windows::ADSI::Group.new(group.name).sid.to_s
+              sid = Puppet::Util::Windows::ADSI::Group.new(group.name).sid.sid
               winsec.set_group(sid, path)
               winsec.set_mode(WindowsSecurityTester::S_IRWXG, path)
             ensure

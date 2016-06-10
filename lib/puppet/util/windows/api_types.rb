@@ -19,7 +19,6 @@ module Puppet::Util::Windows::APITypes
 
   class ::FFI::Pointer
     NULL_HANDLE = 0
-    NULL_TERMINATOR_WCHAR = 0
 
     def self.from_string_to_wide_string(str, &block)
       str = Puppet::Util::Windows::String.wide_string(str)
@@ -52,6 +51,7 @@ module Puppet::Util::Windows::APITypes
 
     alias_method :read_wchar, :read_uint16
     alias_method :read_word,  :read_uint16
+    alias_method :read_array_of_wchar, :read_array_of_uint16
 
     def read_wide_string(char_length, dst_encoding = Encoding::UTF_8)
       # char_length is number of wide chars (typically excluding NULLs), *not* bytes
@@ -59,18 +59,24 @@ module Puppet::Util::Windows::APITypes
       str.encode(dst_encoding)
     end
 
-    def read_arbitrary_wide_string_up_to(max_char_length = 512)
-      # max_char_length is number of wide chars (typically excluding NULLs), *not* bytes
-      # use a pointer to read one UTF-16LE char (2 bytes) at a time
-      wchar_ptr = FFI::Pointer.new(:wchar, address)
-
-      # now iterate 2 bytes at a time until an offset lower than max_char_length is found
-      0.upto(max_char_length - 1) do |i|
-        if wchar_ptr[i].read_wchar == NULL_TERMINATOR_WCHAR
-          return read_wide_string(i)
-        end
+    # @param max_char_length [Integer] Maximum number of wide chars tp return (typically excluding NULLs), *not* bytes
+    # @param null_terminator [Symbol] Number of number of null wchar characters, *not* bytes, that determine the end of the string
+    #   null_terminator = :single_null, then the terminating sequence is two bytes of zero.   This is UNIT16 = 0
+    #   null_terminator = :double_null, then the terminating sequence is four bytes of zero.  This is UNIT32 = 0
+    def read_arbitrary_wide_string_up_to(max_char_length = 512, null_terminator = :single_null)
+      if null_terminator != :single_null && null_terminator != :double_null
+        raise "Unable to read wide strings with #{null_terminator} terminal nulls"
       end
 
+      terminator_width = null_terminator == :single_null ? 1 : 2
+      reader_method = null_terminator == :single_null ? :get_uint16 : :get_uint32
+
+      # Look for a null terminating characters; if found, read up to that null (exclusive)
+      (0...max_char_length - terminator_width).each do |i|
+        return read_wide_string(i) if send(reader_method, (i * 2)) == 0
+      end
+
+      # String is longer than the max; read just to the max
       read_wide_string(max_char_length)
     end
 
@@ -113,10 +119,10 @@ module Puppet::Util::Windows::APITypes
   # https://github.com/ffi/ffi/wiki/Types
 
   # Windows - Common Data Types
-  # http://msdn.microsoft.com/en-us/library/cc230309.aspx
+  # https://msdn.microsoft.com/en-us/library/cc230309.aspx
 
   # Windows Data Types
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa383751(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa383751(v=vs.85).aspx
 
   FFI.typedef :uint16, :word
   FFI.typedef :uint32, :dword
@@ -156,7 +162,7 @@ module Puppet::Util::Windows::APITypes
   FFI.typedef :int32, :win32_long
   # FFI bool can be only 1 byte at times,
   # Win32 BOOL is a signed int, and is always 4 bytes, even on x64
-  # http://blogs.msdn.com/b/oldnewthing/archive/2011/03/28/10146459.aspx
+  # https://blogs.msdn.com/b/oldnewthing/archive/2011/03/28/10146459.aspx
   FFI.typedef :int32, :win32_bool
 
   # Same as a LONG, a 32-bit signed integer
@@ -173,7 +179,7 @@ module Puppet::Util::Windows::APITypes
   module ::FFI::WIN32
     extend ::FFI::Library
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/aa373931(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/aa373931(v=vs.85).aspx
     # typedef struct _GUID {
     #   DWORD Data1;
     #   WORD  Data2;
@@ -204,7 +210,7 @@ module Puppet::Util::Windows::APITypes
       def ==(other) Windows.memcmp(other, self, size) == 0 end
     end
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms724950(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/ms724950(v=vs.85).aspx
     # typedef struct _SYSTEMTIME {
     #   WORD wYear;
     #   WORD wMonth;
@@ -245,21 +251,21 @@ module Puppet::Util::Windows::APITypes
 
     ffi_convention :stdcall
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/aa366730(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/aa366730(v=vs.85).aspx
     # HLOCAL WINAPI LocalFree(
     #   _In_  HLOCAL hMem
     # );
     ffi_lib :kernel32
     attach_function :LocalFree, [:handle], :handle
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms724211(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/ms724211(v=vs.85).aspx
     # BOOL WINAPI CloseHandle(
     #   _In_  HANDLE hObject
     # );
     ffi_lib :kernel32
     attach_function_private :CloseHandle, [:handle], :win32_bool
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms680722(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/ms680722(v=vs.85).aspx
     # void CoTaskMemFree(
     #   _In_opt_  LPVOID pv
     # );

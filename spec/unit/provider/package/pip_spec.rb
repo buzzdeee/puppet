@@ -2,7 +2,7 @@
 require 'spec_helper'
 
 provider_class = Puppet::Type.type(:package).provider(:pip)
-osfamilies = { ['RedHat', '6'] => 'pip-python', ['RedHat', '7'] => 'pip', ['Not RedHat', nil] => 'pip' }
+osfamilies = { ['All', nil] => ['pip', 'pip-python'] }
 
 describe provider_class do
 
@@ -12,7 +12,6 @@ describe provider_class do
     @client = stub_everything('client')
     @client.stubs(:call).with('package_releases', 'real_package').returns(["1.3", "1.2.5", "1.2.4"])
     @client.stubs(:call).with('package_releases', 'fake_package').returns([])
-    XMLRPC::Client.stubs(:new2).returns(@client)
   end
 
   describe "parse" do
@@ -32,42 +31,45 @@ describe provider_class do
   end
 
   describe "cmd" do
-    it "should return pip-python on RedHat < 7 systems" do
-      Facter.stubs(:value).with(:osfamily).returns("RedHat")
-      Facter.stubs(:value).with(:operatingsystemmajrelease).returns("6")
-      expect(provider_class.cmd).to eq('pip-python')
-    end
-
-    it "should return pip on RedHat >= 7 systems" do
-      Facter.stubs(:value).with(:osfamily).returns("RedHat")
-      Facter.stubs(:value).with(:operatingsystemmajrelease).returns("7")
-      expect(provider_class.cmd).to eq('pip')
+    it "should return pip-python on legacy systems" do
+      Facter.stubs(:value).with(:osfamily).returns("legacy")
+      expect(provider_class.cmd[1]).to eq('pip-python')
     end
 
     it "should return pip by default" do
-      Facter.stubs(:value).with(:osfamily).returns("Not RedHat")
-      expect(provider_class.cmd).to eq('pip')
+      Facter.stubs(:value).with(:osfamily).returns("All")
+      expect(provider_class.cmd[0]).to eq('pip')
     end
 
   end
 
   describe "instances" do
 
-    osfamilies.each do |osfamily, pip_cmd|
-      it "should return an array on #{osfamily} when #{pip_cmd} is present" do
+    osfamilies.each do |osfamily, pip_cmds|
+      it "should return an array on #{osfamily} when #{pip_cmds.join(' or ')} is present" do
         Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
         Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
-        provider_class.expects(:which).with(pip_cmd).returns("/fake/bin/pip")
-        p = stub("process")
-        p.expects(:collect).yields("real_package==1.2.5")
-        provider_class.expects(:execpipe).with("/fake/bin/pip freeze").yields(p)
-        provider_class.instances
+        pip_cmds.each do |pip_cmd|
+          pip_cmds.each do |cmd|
+            unless cmd == pip_cmd
+              provider_class.expects(:which).with(cmd).returns(nil)
+            end
+          end
+          provider_class.stubs(:pip_version).returns('8.0.1')
+          provider_class.expects(:which).with(pip_cmd).returns("/fake/bin/#{pip_cmd}")
+          p = stub("process")
+          p.expects(:collect).yields("real_package==1.2.5")
+          provider_class.expects(:execpipe).with("/fake/bin/#{pip_cmd} freeze").yields(p)
+          provider_class.instances
+        end
       end
 
-      it "should return an empty array on #{osfamily} when #{pip_cmd} is missing" do
+      it "should return an empty array on #{osfamily} when #{pip_cmds.join(' and ')} are missing" do
         Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
         Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
-        provider_class.expects(:which).with(pip_cmd).returns nil
+        pip_cmds.each do |cmd|
+          provider_class.expects(:which).with(cmd).returns nil
+        end
         expect(provider_class.instances).to eq([])
       end
     end
@@ -118,21 +120,95 @@ describe provider_class do
   end
 
   describe "latest" do
+    context "with pip version < 1.5.4" do
+      before :each do
+        provider_class.stubs(:pip_version).returns('1.0.1')
+        provider_class.stubs(:which).with('pip').returns("/fake/bin/pip")
+        provider_class.stubs(:which).with('pip-python').returns("/fake/bin/pip")
+      end
 
-    it "should find a version number for real_package" do
-      @resource[:name] = "real_package"
-      expect(@provider.latest).not_to eq(nil)
+      it "should find a version number for new_pip_package" do
+        p = StringIO.new(
+          <<-EOS
+          Downloading/unpacking fake-package
+            Using version 0.10.1 (newest of versions: 0.10.1, 0.10, 0.9, 0.8.1, 0.8, 0.7.2, 0.7.1, 0.7, 0.6.1, 0.6, 0.5.2, 0.5.1, 0.5, 0.4, 0.3.1, 0.3, 0.2, 0.1)
+            Downloading real-package-0.10.1.tar.gz (544Kb): 544Kb downloaded
+          Saved ./foo/real-package-0.10.1.tar.gz
+          Successfully downloaded real-package
+          EOS
+        )
+        Puppet::Util::Execution.expects(:execpipe).yields(p).once
+        @resource[:name] = "real_package"
+        expect(@provider.latest).to eq('0.10.1')
+      end
+
+      it "should not find a version number for fake_package" do
+        p = StringIO.new(
+          <<-EOS
+          Downloading/unpacking fake-package
+            Could not fetch URL http://pypi.python.org/simple/fake_package: HTTP Error 404: Not Found
+            Will skip URL http://pypi.python.org/simple/fake_package when looking for download links for fake-package
+            Could not fetch URL http://pypi.python.org/simple/fake_package/: HTTP Error 404: Not Found
+            Will skip URL http://pypi.python.org/simple/fake_package/ when looking for download links for fake-package
+            Could not find any downloads that satisfy the requirement fake-package
+          No distributions at all found for fake-package
+          Exception information:
+          Traceback (most recent call last):
+            File "/usr/lib/python2.7/dist-packages/pip/basecommand.py", line 126, in main
+              self.run(options, args)
+            File "/usr/lib/python2.7/dist-packages/pip/commands/install.py", line 223, in run
+              requirement_set.prepare_files(finder, force_root_egg_info=self.bundle, bundle=self.bundle)
+            File "/usr/lib/python2.7/dist-packages/pip/req.py", line 948, in prepare_files
+              url = finder.find_requirement(req_to_install, upgrade=self.upgrade)
+            File "/usr/lib/python2.7/dist-packages/pip/index.py", line 152, in find_requirement
+              raise DistributionNotFound('No distributions at all found for %s' % req)
+          DistributionNotFound: No distributions at all found for fake-package
+
+          Storing complete log in /root/.pip/pip.log
+          EOS
+        )
+        Puppet::Util::Execution.expects(:execpipe).yields(p).once
+        @resource[:name] = "fake_package"
+        expect(@provider.latest).to eq(nil)
+      end
     end
 
-    it "should not find a version number for fake_package" do
-      @resource[:name] = "fake_package"
-      expect(@provider.latest).to eq(nil)
-    end
+    context "with pip version >= 1.5.4" do
+      # For Pip 1.5.4 and above, you can get a version list from CLI - which allows for native pip behavior
+      # with regards to custom repositories, proxies and the like
 
-    it "should handle a timeout gracefully" do
-      @resource[:name] = "fake_package"
-      @client.stubs(:call).raises(Timeout::Error)
-      expect { @provider.latest }.to raise_error(Puppet::Error)
+      before :each do
+        provider_class.stubs(:pip_version).returns('1.5.4')
+        provider_class.stubs(:which).with('pip').returns("/fake/bin/pip")
+        provider_class.stubs(:which).with('pip-python').returns("/fake/bin/pip")
+      end
+
+      it "should find a version number for real_package" do
+        p = StringIO.new(
+          <<-EOS
+          Collecting real-package==versionplease
+            Could not find a version that satisfies the requirement real-package==versionplease (from versions: 1.1.3, 1.2, 1.9b1)
+          No matching distribution found for real-package==versionplease
+          EOS
+        )
+        Puppet::Util::Execution.expects(:execpipe).with(["/fake/bin/pip", "install", "real_package==versionplease"]).yields(p).once
+        @resource[:name] = "real_package"
+        latest = @provider.latest
+        expect(latest).to eq('1.9b1')
+      end
+
+      it "should not find a version number for fake_package" do
+        p = StringIO.new(
+          <<-EOS
+          Collecting fake-package==versionplease
+            Could not find a version that satisfies the requirement fake-package==versionplease (from versions: )
+          No matching distribution found for fake-package==versionplease
+          EOS
+        )
+        Puppet::Util::Execution.expects(:execpipe).with(["/fake/bin/pip", "install", "fake_package==versionplease"]).yields(p).once
+        @resource[:name] = "fake_package"
+        expect(@provider.latest).to eq(nil)
+      end
     end
 
   end
@@ -193,6 +269,15 @@ describe provider_class do
       @provider.install
     end
 
+    it "should handle install options" do
+      @resource[:ensure] = :installed
+      @resource[:source] = nil
+      @resource[:install_options] = [{"--timeout" => "10"}, "--no-index"]
+      @provider.expects(:lazy_pip).
+        with("install", "-q", "--timeout=10", "--no-index", "fake_package")
+      @provider.install
+    end
+
   end
 
   describe "uninstall" do
@@ -215,6 +300,23 @@ describe provider_class do
 
   end
 
+  describe "pip_version" do
+
+    it "should return nil on missing pip" do
+      provider_class.stubs(:pip_cmd).returns(nil)
+      expect(provider_class.pip_version).to eq(nil)
+    end
+
+    it "should look up version if pip is present" do
+      provider_class.stubs(:pip_cmd).returns('/fake/bin/pip')
+      p = stub("process")
+      p.expects(:collect).yields('pip 8.0.2 from /usr/local/lib/python2.7/dist-packages (python 2.7)')
+      provider_class.expects(:execpipe).with(['/fake/bin/pip', '--version']).yields(p)
+      expect(provider_class.pip_version).to eq('8.0.2')
+    end
+
+  end
+
   describe "lazy_pip" do
 
     after(:each) do
@@ -226,30 +328,41 @@ describe provider_class do
       @provider.method(:lazy_pip).call "freeze"
     end
 
-    osfamilies.each do |osfamily, pip_cmd|
-      it "should retry on #{osfamily} if #{pip_cmd} has not yet been found" do
-        Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
-        Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
-        @provider.expects(:pip).twice.with('freeze').raises(NoMethodError).then.returns(nil)
-        @provider.expects(:which).with(pip_cmd).returns("/fake/bin/pip")
-        @provider.method(:lazy_pip).call "freeze"
+    osfamilies.each do |osfamily, pip_cmds|
+      pip_cmds.each do |pip_cmd|
+        it "should retry on #{osfamily} if #{pip_cmd} has not yet been found" do
+          Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
+          Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
+          @provider.expects(:pip).twice.with('freeze').raises(NoMethodError).then.returns(nil)
+          pip_cmds.each do |cmd|
+            unless cmd == pip_cmd
+              @provider.expects(:which).with(cmd).returns(nil)
+            end
+          end
+          @provider.expects(:which).with(pip_cmd).returns("/fake/bin/#{pip_cmd}")
+          @provider.method(:lazy_pip).call "freeze"
+        end
       end
 
-      it "should fail on #{osfamily} if #{pip_cmd} is missing" do
+      it "should fail on #{osfamily} if #{pip_cmds.join(' and ')} are missing" do
         Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
         Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
         @provider.expects(:pip).with('freeze').raises(NoMethodError)
-        @provider.expects(:which).with(pip_cmd).returns(nil)
+        pip_cmds.each do |pip_cmd|
+          @provider.expects(:which).with(pip_cmd).returns(nil)
+        end
         expect { @provider.method(:lazy_pip).call("freeze") }.to raise_error(NoMethodError)
       end
 
-      it "should output a useful error message on #{osfamily} if #{pip_cmd} is missing" do
+      it "should output a useful error message on #{osfamily} if #{pip_cmds.join(' and ')} are missing" do
         Facter.stubs(:value).with(:osfamily).returns(osfamily.first)
         Facter.stubs(:value).with(:operatingsystemmajrelease).returns(osfamily.last)
         @provider.expects(:pip).with('freeze').raises(NoMethodError)
-        @provider.expects(:which).with(pip_cmd).returns(nil)
+        pip_cmds.each do |pip_cmd|
+          @provider.expects(:which).with(pip_cmd).returns(nil)
+        end
         expect { @provider.method(:lazy_pip).call("freeze") }.
-          to raise_error(NoMethodError, 'Could not locate the pip command.')
+          to raise_error(NoMethodError, "Could not locate command #{pip_cmds.join(' and ')}.")
       end
 
     end

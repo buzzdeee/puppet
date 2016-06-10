@@ -7,12 +7,13 @@ module Puppet
   module Acceptance
     module InstallUtils
       PLATFORM_PATTERNS = {
-        :redhat        => /fedora|el|centos/,
-        :debian        => /debian|ubuntu/,
+        :redhat        => /fedora|el-|centos/,
+        :debian        => /debian|ubuntu|cumulus/,
         :debian_ruby18 => /debian|ubuntu-lucid|ubuntu-precise/,
         :solaris_10    => /solaris-10/,
         :solaris_11    => /solaris-11/,
         :windows       => /windows/,
+        :eos           => /^eos-/,
       }.freeze
 
       # Installs packages on the hosts.
@@ -107,7 +108,7 @@ module Puppet
           on host, 'iptables -F'
         when /fedora|el-7/
           on host, puppet('resource', 'service', 'firewalld', 'ensure=stopped')
-        when /el|centos/
+        when /el-|centos/
           on host, puppet('resource', 'service', 'iptables', 'ensure=stopped')
         when /ubuntu/
           on host, puppet('resource', 'service', 'ufw', 'ensure=stopped')
@@ -124,104 +125,53 @@ module Puppet
         sha     = sha == 'nightly' ? nil                        :  sha
 
         case platform
-          when /^(fedora|el|centos)-(\d+)-(.+)$/
-            variant = (($1 == 'centos') ? 'el' : $1)
-            fedora_prefix = ((variant == 'fedora') ? 'f' : '')
-            version = $2
-            arch = $3
+        when /^(fedora|el|centos)-(\d+)-(.+)$/
+          variant = (($1 == 'centos') ? 'el' : $1)
+          fedora_prefix = ((variant == 'fedora') ? 'f' : '')
+          version = $2
+          arch = $3
 
-            rpm = fetch(
-              "http://yum.puppetlabs.com",
-              "puppetlabs-release-%s-%s.noarch.rpm" % [variant, version],
-              platform_configs_dir
-            )
+          repo_filename = "pl-%s%s-%s-%s%s-%s.repo" % [
+            project,
+            sha ? '-' + sha : '',
+            variant,
+            fedora_prefix,
+            version,
+            arch
+          ]
+          repo_url = "http://%s/%s/%s/repo_configs/rpm/%s" % [tld, project, sha, repo_filename]
 
-            pattern = "pl-%s%s-%s-%s%s-%s.repo"
-            repo_filename = pattern % [
-              project,
-              sha ? '-' + sha : '',
-              variant,
-              fedora_prefix,
-              version,
-              arch
-            ]
-            repo = fetch(
-              "http://%s/%s/%s/repo_configs/rpm/" % [tld, project, sha],
-              repo_filename,
-              platform_configs_dir
-            )
+          on host, "curl -o /etc/yum.repos.d/#{repo_filename} #{repo_url}"
+        when /^(debian|ubuntu|cumulus)-([^-]+)-(.+)$/
+          variant = $1
+          version = $2
+          arch = $3
 
-            link = "http://%s/%s/%s/repos/%s/%s%s/products/%s/" % [
-              tld,
-              project,
-              sha,
-              variant,
-              fedora_prefix,
-              version,
-              arch
-            ]
+          if variant =~ /cumulus/ then
+            version = variant
+          end
 
-            if not link_exists?(link)
-              link = "http://%s/%s/%s/repos/%s/%s%s/devel/%s/" % [
-                tld,
-                project,
-                sha,
-                variant,
-                fedora_prefix,
-                version,
-                arch
-              ]
-            end
-            if not link_exists?(link)
-              raise "Unable to reach a repo directory at #{link}"
-            end
-            repo_dir = fetch_remote_dir(link, platform_configs_dir)
-            repo_loc = "/root/#{project}"
+          list_filename = "pl-%s%s-%s.list" % [
+            project,
+            sha ? '-' + sha : '',
+            version
+          ]
+          list_url = "http://%s/%s/%s/repo_configs/deb/%s" % [tld, project, sha, list_filename]
 
-            on host, "rm -rf #{repo_loc}"
-            on host, "mkdir -p #{repo_loc}"
-
-            scp_to host, rpm, repo_loc
-            scp_to host, repo, repo_loc
-            scp_to host, repo_dir, repo_loc
-
-            on host, "cp #{repo_loc}/*.repo /etc/yum.repos.d"
-            on host, "find /etc/yum.repos.d/ -name \"*.repo\" -exec sed -i \"s/baseurl\\s*=\\s*http:\\/\\/#{tld}.*$/baseurl=file:\\/\\/\\/root\\/#{project}\\/#{arch}/\" {} \\;"
-            on host, "rpm -Uvh --force #{repo_loc}/*.rpm"
-
-          when /^(debian|ubuntu)-([^-]+)-(.+)$/
-            variant = $1
-            version = $2
-            arch = $3
-
-            deb = fetch(
-              "http://apt.puppetlabs.com/",
-              "puppetlabs-release-%s.deb" % version,
-              platform_configs_dir
-            )
-
-            list = fetch(
-              "http://%s/%s/%s/repo_configs/deb/" % [tld, project, sha],
-              "pl-%s%s-%s.list" % [project, sha ? '-' + sha : '', version],
-              platform_configs_dir
-            )
-
-            repo_dir = fetch_remote_dir("http://%s/%s/%s/repos/apt/%s" % [tld, project, sha, version], platform_configs_dir)
-            repo_loc = "/root/#{project}"
-
-            on host, "rm -rf #{repo_loc}"
-            on host, "mkdir -p #{repo_loc}"
-
-            scp_to host, deb, repo_loc
-            scp_to host, list, repo_loc
-            scp_to host, repo_dir, repo_loc
-
-            on host, "cp #{repo_loc}/*.list /etc/apt/sources.list.d"
-            on host, "find /etc/apt/sources.list.d/ -name \"*.list\" -exec sed -i \"s/deb\\s\\+http:\\/\\/#{tld}.*$/deb file:\\/\\/\\/root\\/#{project}\\/#{version} #{version} main/\" {} \\;"
-            on host, "dpkg -i --force-all #{repo_loc}/*.deb"
-            on host, "apt-get update"
+          on host, "curl -o /etc/apt/sources.list.d/#{list_filename} #{list_url}"
+          on host, "apt-get update"
+        else
+          if project == 'puppet-agent'
+            opts = {
+              :puppet_collection => 'PC1',
+              :puppet_agent_sha => ENV['SHA'],
+              :puppet_agent_version => ENV['SUITE_VERSION'] || ENV['SHA']
+            }
+            # this installs puppet-agent on windows (msi), osx (dmg) and eos (swix)
+            install_puppet_agent_dev_repo_on(agent, opts)
           else
-            host.logger.notify("No repository installation step for #{platform} yet...")
+            fail_test("No repository installation step for #{platform} yet...")
+          end
         end
       end
 
@@ -236,24 +186,6 @@ module Puppet
           on host, "#{gem} source --clear-all"
           on host, "#{gem} source --add #{gem_source}"
         end
-      end
-
-      def install_puppet_from_msi( host, opts )
-        if not link_exists?(opts[:url])
-          raise "Puppet does not exist at #{opts[:url]}!"
-        end
-
-        # `start /w` blocks until installation is complete, but needs to be wrapped in `cmd.exe /c`
-        on host, "cmd.exe /c start /w msiexec /qn /i #{opts[:url]} /L*V C:\\\\Windows\\\\Temp\\\\Puppet-Install.log"
-
-        # make sure the background service isn't running while the test executes
-        on host, "net stop puppet"
-
-        # make sure install is sane, beaker has already added puppet and ruby
-        # to PATH in ~/.ssh/environment
-        on host, puppet('--version')
-        ruby = Puppet::Acceptance::CommandUtils.ruby_command(host)
-        on host, "#{ruby} --version"
       end
     end
   end

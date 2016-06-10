@@ -2,11 +2,15 @@
 # https://github.com/puppetlabs/puppet-specifications/blob/master/file_paths.md
 test_name 'PUP-4033: Ensure aio path spec is honored'
 
+require 'puppet/acceptance/common_utils'
+extend Puppet::Acceptance::CommandUtils
+
 # include file_exists?
 require 'puppet/acceptance/temp_file_utils'
 extend Puppet::Acceptance::TempFileUtils
 
-def config_options(platform)
+def config_options(agent)
+  platform = agent[:platform]
   case platform
   when /windows/
     if platform =~ /2003/
@@ -22,20 +26,23 @@ def config_options(platform)
     logdir = "#{puppetlabs_data}/puppet/var/log"
     rundir = "#{puppetlabs_data}/puppet/var/run"
     sep = ";"
+
+    module_working_dir = on(agent, "#{ruby_command(agent)} -e 'require \"tmpdir\"; print Dir.tmpdir'").stdout.chomp
   else
     codedir = '/etc/puppetlabs/code'
     confdir = '/etc/puppetlabs/puppet'
     vardir = '/opt/puppetlabs/puppet/cache'
-    logdir = '/var/log/puppetlabs'
+    logdir = '/var/log/puppetlabs/puppet'
     rundir = '/var/run/puppetlabs'
     sep = ":"
+
+    module_working_dir = "#{vardir}/puppet-module"
   end
 
   [
     # code
     {:name => :codedir,         :expected => codedir,                     :installed => :dir},
     {:name => :environmentpath, :expected => "#{codedir}/environments"},
-    {:name => :hiera_config,    :expected => "#{codedir}/hiera.yaml"},
 
     # confdir
     {:name => :confdir,         :expected => confdir,                     :installed => :dir},
@@ -49,6 +56,7 @@ def config_options(platform)
     {:name => :config,          :expected => "#{confdir}/puppet.conf",    :installed => :file},
     {:name => :route_file,      :expected => "#{confdir}/routes.yaml"},
     {:name => :ssldir,          :expected => "#{confdir}/ssl",            :installed => :dir},
+    {:name => :hiera_config,    :expected => "#{confdir}/hiera.yaml"},
 
     # vardir
     {:name => :vardir,          :expected => "#{vardir}",                 :installed => :dir},
@@ -60,7 +68,7 @@ def config_options(platform)
     {:name => :pluginfactdest,  :expected => "#{vardir}/facts.d",         :installed => :dir},
     {:name => :libdir,          :expected => "#{vardir}/lib",             :installed => :dir},
     {:name => :factpath,        :expected => "#{vardir}/lib/facter#{sep}#{vardir}/facts", :not_path => true},
-    {:name => :module_working_dir, :expected => "#{vardir}/puppet-module"},
+    {:name => :module_working_dir, :expected => module_working_dir},
     {:name => :reportdir,       :expected => "#{vardir}/reports"},
     {:name => :server_datadir,  :expected => "#{vardir}/server_data"},
     {:name => :statedir,        :expected => "#{vardir}/state",           :installed => :dir},
@@ -76,8 +84,9 @@ end
 step 'test configprint outputs'
 agents.each do |agent|
   on(agent, puppet_agent('--configprint all')) do
-    config_options(agent[:platform]).each do |config_option|
-      assert_match("#{config_option[:name]} = #{config_option[:expected]}", stdout)
+    output = stdout
+    config_options(agent).each do |config_option|
+      assert_match("#{config_option[:name]} = #{config_option[:expected]}", output)
     end
   end
 end
@@ -85,15 +94,16 @@ end
 step 'test puppet genconfig entries'
 agents.each do |agent|
   on(agent, puppet_agent('--genconfig')) do
-    config_options(agent[:platform]).each do |config_option|
-      assert_match("#{config_option[:name]} = #{config_option[:expected]}", stdout)
+    output = stdout
+    config_options(agent).each do |config_option|
+      assert_match("#{config_option[:name]} = #{config_option[:expected]}", output)
     end
   end
 end
 
 step 'test puppet config paths exist'
 agents.each do |agent|
-  config_options(agent[:platform]).select {|v| !v[:not_path] }.each do |config_option|
+  config_options(agent).select {|v| !v[:not_path] }.each do |config_option|
     path = config_option[:expected]
     case config_option[:installed]
     when :dir
@@ -110,9 +120,14 @@ end
 
 
 public_binaries = {
-  :posix => ['puppet', 'facter', 'hiera', 'mco', 'cfacter'],
-  :win   => ['puppet.bat', 'facter.bat', 'hiera.bat', 'mco.bat', 'cfacter.bat']
+  :posix => ['puppet', 'facter', 'hiera'],
+  :win   => ['puppet.bat', 'facter.bat', 'hiera.bat']
 }
+
+if @options[:type] != 'git' then
+  public_binaries[:posix].concat ['mco']
+  public_binaries[:win].concat ['mco.bat']
+end
 
 def locations(platform, ruby_arch, type)
   if type != 'aio'
@@ -142,15 +157,16 @@ agents.each do |agent|
   dir = locations(agent[:platform], agent[:ruby_arch], @options[:type])
   os = agent['platform'] =~ /windows/ ? :win : :posix
 
-  # Filter out cfacter outside of aio, as we don't install it as part of Puppet acceptance runs yet.
-  public_binaries[os].select {|v| @options[:type] == 'aio' || v !~ /cfacter/}.each do |binary|
+  file_type =  (@options[:type] == 'git' || os == :win) ? :binary : :symlink
+
+  public_binaries[os].each do |binary|
     path = File.join(dir, binary)
-    case os
-    when :win
+    case file_type
+    when :binary
       if !file_exists?(agent, path)
         fail_test("Failed to find expected binary '#{path}' on agent '#{agent}'")
       end
-    when :posix
+    when :symlink
       if !link_exists?(agent, path)
         fail_test("Failed to find expected symbolic link '#{path}' on agent '#{agent}'")
       end

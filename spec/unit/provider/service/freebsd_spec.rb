@@ -7,6 +7,7 @@ describe provider_class do
   before :each do
     @provider = provider_class.new
     @provider.stubs(:initscript)
+    Facter.stubs(:value).with(:osfamily).returns 'FreeBSD'
   end
 
   it "should correctly parse rcvar for FreeBSD < 7" do
@@ -41,6 +42,22 @@ OUTPUT
 $ntpd=YES
 OUTPUT
     expect(@provider.rcvar).to eq(['# ntpd', 'ntpd=YES'])
+  end
+
+  it 'should parse service names with a description' do
+    @provider.stubs(:execute).returns <<OUTPUT
+# local_unbound : local caching forwarding resolver
+local_unbound_enable="YES"
+OUTPUT
+    expect(@provider.service_name).to eq('local_unbound')
+  end
+
+  it 'should parse service names without a description' do
+    @provider.stubs(:execute).returns <<OUTPUT
+# local_unbound
+local_unbound="YES"
+OUTPUT
+    expect(@provider.service_name).to eq('local_unbound')
   end
 
   it "should find the right rcvar_value for FreeBSD < 7" do

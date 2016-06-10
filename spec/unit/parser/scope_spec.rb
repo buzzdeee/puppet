@@ -33,6 +33,15 @@ describe Puppet::Parser::Scope do
     end
   end
 
+  it "should generate a simple string when inspecting a scope" do
+    expect(@scope.inspect).to eq("Scope()")
+  end
+
+  it "should generate a simple string when inspecting a scope with a resource" do
+    @scope.resource="foo::bar"
+    expect(@scope.inspect).to eq("Scope(foo::bar)")
+  end
+
   it "should return a scope for use in a test harness" do
     expect(create_test_scope_for_node("node_name_foo")).to be_a_kind_of(Puppet::Parser::Scope)
   end
@@ -149,7 +158,7 @@ describe Puppet::Parser::Scope do
       expect { @scope[:foo] = 12 }.to raise_error(Puppet::ParseError, /Scope variable name .* not a string/)
     end
 
-    it "should return nil for unset variables" do
+    it "should return nil for unset variables when --strict variables is not in effect" do
       expect(@scope["var"]).to be_nil
     end
 
@@ -192,11 +201,31 @@ describe Puppet::Parser::Scope do
       @scope["var"] = "childval"
       expect {
         @scope["var"] = "change"
-      }.to raise_error(Puppet::Error, "Cannot reassign variable var")
+      }.to raise_error(Puppet::Error, "Cannot reassign variable '$var'")
     end
 
     it "should be able to detect when variables are not set" do
       expect(@scope).not_to be_include("var")
+    end
+
+    it "warns and return nil for non found unqualified variable" do
+      Puppet.expects(:warn_once)
+      expect(@scope["santa_clause"]).to be_nil
+    end
+
+    it "warns once for a non found variable" do
+      Puppet.expects(:warning).once
+      expect([@scope["santa_claus"],@scope["santa_claus"]]).to eq([nil, nil])
+    end
+
+    it "warns and return nil for non found qualified variable" do
+      Puppet.expects(:warn_once)
+      expect(@scope["north_pole::santa_clause"]).to be_nil
+    end
+
+    it "does not warn when a numeric variable is missing - they always exist" do
+      Puppet.expects(:warn_once).never
+      expect(@scope["1"]).to be_nil
     end
 
     describe "and the variable is qualified" do
@@ -257,17 +286,16 @@ describe Puppet::Parser::Scope do
 
       it "should warn and return nil for qualified variables whose classes have not been evaluated" do
         klass = newclass("other::deep::klass")
-        @scope.expects(:warning)
+        Puppet.expects(:warn_once)
         expect(@scope["other::deep::klass::var"]).to be_nil
       end
 
       it "should warn and return nil for qualified variables whose classes do not exist" do
-        @scope.expects(:warning)
+        Puppet.expects(:warn_once)
         expect(@scope["other::deep::klass::var"]).to be_nil
       end
 
       it "should return nil when asked for a non-string qualified variable from a class that does not exist" do
-        @scope.stubs(:warning)
         expect(@scope["other::deep::klass::var"]).to be_nil
       end
 
@@ -296,6 +324,51 @@ describe Puppet::Parser::Scope do
         expect { @scope['module_name'] }.to_not raise_error
       end
     end
+
+    context "and strict_variables is false and --strict=off" do
+      before(:each) do
+        Puppet[:strict_variables] = false
+        Puppet[:strict] = :off
+      end
+
+      it "should not error when unknown variable is looked up and produce nil" do
+        expect(@scope['john_doe']).to be_nil
+      end
+
+      it "should not error when unknown qualified variable is looked up and produce nil" do
+        expect(@scope['nowhere::john_doe']).to be_nil
+      end
+    end
+
+    context "and strict_variables is false and --strict=warning" do
+      before(:each) do
+        Puppet[:strict_variables] = false
+        Puppet[:strict] = :warning
+      end
+
+      it "should not error when unknown variable is looked up" do
+        expect(@scope['john_doe']).to be_nil
+      end
+
+      it "should not error when unknown qualified variable is looked up" do
+        expect(@scope['nowhere::john_doe']).to be_nil
+      end
+    end
+
+    context "and strict_variables is false and --strict=error" do
+      before(:each) do
+        Puppet[:strict_variables] = false
+        Puppet[:strict] = :error
+      end
+
+      it "should raise error when unknown variable is looked up" do
+        expect { @scope['john_doe'] }.to raise_error(/Undefined variable/)
+      end
+
+      it "should not throw a symbol when unknown qualified variable is looked up" do
+        expect { @scope['nowhere::john_doe'] }.to raise_error(/Undefined variable/)
+      end
+    end
   end
 
   describe "when variables are set with append=true" do
@@ -305,7 +378,7 @@ describe Puppet::Parser::Scope do
         @scope.setvar("var", "1", :append => true)
       }.to raise_error(
         Puppet::ParseError,
-        "Cannot append, variable var is defined in this scope"
+        "Cannot append, variable '$var' is defined in this scope"
       )
     end
 
@@ -480,17 +553,15 @@ describe Puppet::Parser::Scope do
         expect(@scope.include?("1")).to be_falsey
       end
 
-      describe "when calling unset_ephemeral_var with a level" do
+      describe "when using a guarded scope" do
         it "should remove ephemeral scopes up to this level" do
           @scope.set_match_data({1 => :value1})
           @scope.new_ephemeral
           @scope.set_match_data({1 => :value2})
-          level = @scope.ephemeral_level()
-          @scope.new_ephemeral
-          @scope.set_match_data({1 => :value3})
-
-          @scope.unset_ephemeral_var(level)
-
+          @scope.with_guarded_scope do
+            @scope.new_ephemeral
+            @scope.set_match_data({1 => :value3})
+          end
           expect(@scope["1"]).to eq(:value2)
         end
       end

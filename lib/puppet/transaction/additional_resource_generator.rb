@@ -5,6 +5,8 @@
 #
 # @api private
 class Puppet::Transaction::AdditionalResourceGenerator
+  attr_writer :relationship_graph
+
   def initialize(catalog, relationship_graph, prioritizer)
     @catalog = catalog
     @relationship_graph = relationship_graph
@@ -20,13 +22,25 @@ class Puppet::Transaction::AdditionalResourceGenerator
     end
     return unless generated
     generated = [generated] unless generated.is_a?(Array)
-    generated.collect do |res|
+    generated.collect! do |res|
       @catalog.resource(res.ref) || res
-    end.each do |res|
-      priority = @prioritizer.generate_priority_contained_in(resource, res)
-      add_resource(res, resource, priority)
+    end
+    unless resource.depthfirst?
+      # This is reversed becuase PUP-1963 changed how generated
+      # resources were added to the catalog. It exists for backwards
+      # compatibility only, and can probably be removed in Puppet 5
+      #
+      # Previously, resources were given sequential priorities in the
+      # relationship graph. Post-1963, resources are added to the
+      # catalog one by one adjacent to the parent resource. This
+      # causes an implicit reversal of their application order from
+      # the old code. The reverse makes it all work like it did.
+      generated.reverse!
+    end
+    generated.each do |res|
+      add_resource(res, resource)
 
-      add_conditional_directed_dependency(resource, res)
+      add_generated_directed_dependency(resource, res)
       generate_additional_resources(res)
     end
   end
@@ -102,13 +116,80 @@ class Puppet::Transaction::AdditionalResourceGenerator
     end
   end
 
-  def add_resource(res, parent_resource, priority)
+  def add_resource(res, parent_resource, priority=nil)
     if @catalog.resource(res.ref).nil?
       res.tag(*parent_resource.tags)
-      @catalog.add_resource(res)
-      @relationship_graph.add_vertex(res, priority)
+      if parent_resource.depthfirst?
+        @catalog.add_resource_before(parent_resource, res)
+      else
+        @catalog.add_resource_after(parent_resource, res)
+      end
       @catalog.add_edge(@catalog.container_of(parent_resource), res)
+      if @relationship_graph && priority
+        # If we have a relationship_graph we should add the resource
+        # to it (this is an eval_generate). If we don't, then the
+        # relationship_graph has not yet been created and we can skip
+        # adding it.
+        @relationship_graph.add_vertex(res, priority)
+      end
       res.finish
+    end
+  end
+
+  # add correct edge for depth- or breadth- first traversal of
+  # generated resource. Skip generating the edge if there is already
+  # some sort of edge between the two resources.
+  def add_generated_directed_dependency(parent, child, label=nil)
+    if parent.depthfirst?
+      source = child
+      target = parent
+    else
+      source = parent
+      target = child
+    end
+
+    # For each potential relationship metaparam, check if parent or
+    # child references the other. If there are none, we should add our
+    # edge.
+    edge_exists = Puppet::Type.relationship_params.any? { |param|
+      param_sym = param.name.to_sym
+
+      if parent[param_sym]
+        parent_contains = parent[param_sym].any? { |res|
+          res.ref == child.ref
+        }
+      else
+        parent_contains = false
+      end
+
+      if child[param_sym]
+        child_contains = child[param_sym].any? { |res|
+          res.ref == parent.ref
+        }
+      else
+        child_contains = false
+      end
+
+      parent_contains || child_contains
+    }
+
+    if not edge_exists
+      # We *cannot* use target.to_resource here!
+      #
+      # For reasons that are beyond my (and, perhaps, human)
+      # comprehension, to_resource will call retrieve. This is
+      # problematic if a generated resource needs the system to be
+      # changed by a previous resource (think a file on a path
+      # controlled by a mount resource).
+      #
+      # Instead of using to_resource, we just construct a resource as
+      # if the arguments to the Type instance had been passed to a
+      # Resource instead.
+      resource = ::Puppet::Resource.new(target.class, target.title,
+                                        :parameters => target.original_parameters)
+
+      source[:before] ||= []
+      source[:before] << resource
     end
   end
 

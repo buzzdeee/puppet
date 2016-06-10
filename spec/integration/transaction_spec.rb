@@ -229,7 +229,7 @@ describe Puppet::Transaction do
     notify.expects(:pre_run_check).raises(Puppet::Error, "fail for testing")
 
     catalog = mk_catalog(file, notify)
-    catalog.apply
+    expect { catalog.apply }.to raise_error(Puppet::Error, /Some pre-run checks failed/)
     expect(Puppet::FileSystem.exist?(path)).not_to be_truthy
   end
 
@@ -319,6 +319,17 @@ describe Puppet::Transaction do
       expect(Puppet::FileSystem.exist?(fname)).to be_falsey
     end
 
+    it "does not trigger skip-tagged resources" do
+      catalog = mk_catalog
+
+      Puppet[:skip_tags] = "skipme"
+      exec.tag("skipme")
+
+      catalog.add_resource(file, exec)
+      catalog.apply
+      expect(Puppet::FileSystem.exist?(fname)).to be_falsey
+    end
+
     it "does not trigger resources with failed dependencies" do
       catalog = mk_catalog
       file[:path] = make_absolute("/foo/bar/baz")
@@ -352,10 +363,49 @@ describe Puppet::Transaction do
     )
 
     catalog = mk_catalog(exec, file1, file2)
-    catalog.apply
+    transaction = catalog.apply
 
     expect(Puppet::FileSystem.exist?(file1[:path])).to be_falsey
     expect(Puppet::FileSystem.exist?(file2[:path])).to be_falsey
+
+    expect(transaction.resource_status(file1).skipped).to be_truthy
+    expect(transaction.resource_status(file2).skipped).to be_truthy
+
+    expect(transaction.resource_status(file1).failed_dependencies).to eq([exec])
+    expect(transaction.resource_status(file2).failed_dependencies).to eq([exec])
+  end
+
+  it "on failure, skips dynamically-generated dependents" do
+    exec = Puppet::Type.type(:exec).new(
+      :command => "#{File.expand_path('/bin/mkdir')} /this/path/cannot/possibly/exist",
+      :title => "mkdir"
+    )
+
+    tmp = tmpfile("dir1")
+    FileUtils.mkdir_p(tmp)
+    FileUtils.mkdir_p(File.join(tmp, "foo"))
+
+    purge_dir = Puppet::Type.type(:file).new(
+      :title => "dir1",
+      :path => tmp,
+      :require => exec,
+      :ensure => :directory,
+      :recurse => true,
+      :purge => true
+    )
+
+    catalog = mk_catalog(exec, purge_dir)
+    txn = catalog.apply
+
+    expect(txn.resource_status(purge_dir).skipped).to be_truthy
+
+    children = catalog.relationship_graph.direct_dependents_of(purge_dir)
+
+    children.each do |child|
+      expect(txn.resource_status(child).skipped).to be_truthy
+    end
+
+    expect(Puppet::FileSystem.exist?(File.join(tmp, "foo"))).to be_truthy
   end
 
   it "should not trigger subscribing resources on failure" do

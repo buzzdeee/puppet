@@ -1,5 +1,6 @@
 test_name "should modify gid of existing group"
 confine :except, :platform => 'windows'
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 name = "pl#{rand(999999).to_i}"
 gid1  = rand(999999).to_i
@@ -17,10 +18,8 @@ agents.each do |agent|
   end
 
   step "verify that the GID changed"
-  on(agent, "getent group #{name}") do
-    fail_test "gid is wrong through getent output" unless
-      stdout =~ /^#{name}:.*:#{gid2}:/
-  end
+  gid_output = agent.group_gid(name).to_i
+  fail_test "gid #{gid_output} does not match expected value of: #{gid2}" unless gid_output == gid2
 
   step "clean up the system after the test run"
   on(agent, puppet_resource('group', name, 'ensure=absent'))

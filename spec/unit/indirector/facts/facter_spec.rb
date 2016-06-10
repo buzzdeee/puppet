@@ -43,6 +43,14 @@ describe Puppet::Node::Facts::Facter do
       @facter.find(@request)
     end
 
+    it 'should add the puppetversion and agent_specified_environment facts' do
+      reset = sequence 'reset'
+      Facter.expects(:reset).in_sequence(reset)
+      Facter.expects(:add).with(:puppetversion)
+      Facter.expects(:add).with(:agent_specified_environment)
+      @facter.find(@request)
+    end
+
     it 'should include external facts when feature is present' do
       reset = sequence 'reset'
       Puppet.features.stubs(:external_facts?).returns true

@@ -23,6 +23,11 @@ class Puppet::Parser::AST::PopsBridge
       Puppet::Pops::Model::ModelTreeDumper.new.dump(@value)
     end
 
+    def source_text
+      source_adapter = Puppet::Pops::Utils.find_closest_positioned(@value)
+      source_adapter ? source_adapter.extract_text() : nil
+    end
+
     def evaluate(scope)
       object = @@evaluator.evaluate(scope, @value)
       @@evaluator.convert_to_3x(object, scope)
@@ -83,8 +88,26 @@ class Puppet::Parser::AST::PopsBridge
           instantiate_HostClassDefinition(d, modname)
         when Puppet::Pops::Model::ResourceTypeDefinition
           instantiate_ResourceTypeDefinition(d, modname)
+        when Puppet::Pops::Model::CapabilityMapping
+          instantiate_CapabilityMapping(d, modname)
         when Puppet::Pops::Model::NodeDefinition
           instantiate_NodeDefinition(d, modname)
+        when Puppet::Pops::Model::SiteDefinition
+            instantiate_SiteDefinition(d, modname)
+        when Puppet::Pops::Model::FunctionDefinition
+          # The 3x logic calling this will not know what to do with the result, it is compacted away at the end
+          instantiate_FunctionDefinition(d, modname)
+          next
+        when Puppet::Pops::Model::TypeAlias
+          # The 3x logic calling this will not know what to do with the result, it is compacted away at the end
+          instantiate_TypeAlias(d, modname)
+          next
+        when Puppet::Pops::Model::TypeMapping
+          # The 3x logic calling this will not know what to do with the result, it is compacted away at the end
+          instantiate_TypeMapping(d, modname)
+          next
+        when Puppet::Pops::Model::Application
+          instantiate_ApplicationDefinition(d, modname)
         else
           raise Puppet::ParseError, "Internal Error: Unknown type of definition - got '#{d.class}'"
         end
@@ -170,7 +193,30 @@ class Puppet::Parser::AST::PopsBridge
     end
 
     def instantiate_ResourceTypeDefinition(o, modname)
-      Puppet::Resource::Type.new(:definition, o.name, @context.merge(args_from_definition(o, modname)))
+      instance = Puppet::Resource::Type.new(:definition, o.name, @context.merge(args_from_definition(o, modname)))
+      Puppet::Pops::Loaders.register_runtime3_type(instance.name, Puppet::Pops::Adapters::SourcePosAdapter.adapt(o).to_uri)
+      instance
+    end
+
+    def instantiate_CapabilityMapping(o, modname)
+      # Use an intermediate 'capability_mapping' type to pass this info to the compiler where the
+      # actual mapping takes place
+      Puppet::Resource::Type.new(:capability_mapping, "#{o.component} #{o.kind} #{o.capability}", { :arguments => {
+        'component'     => o.component,
+        'kind'          => o.kind,
+        'blueprint'     => {
+          :capability => o.capability,
+          :mappings   => o.mappings.reduce({}) do |memo, mapping|
+            memo[mapping.attribute_name] =
+              Expression.new(:value => mapping.value_expr)
+            memo
+          end
+      }}})
+    end
+
+    def instantiate_ApplicationDefinition(o, modname)
+      args = args_from_definition(o, modname)
+      Puppet::Resource::Type.new(:application, o.name, @context.merge(args))
     end
 
     def instantiate_NodeDefinition(o, modname)
@@ -183,45 +229,60 @@ class Puppet::Parser::AST::PopsBridge
       unless is_nop?(o.parent)
         args[:parent] = @ast_transformer.hostname(o.parent)
       end
+      args = @ast_transformer.merge_location(args, o)
 
       host_matches = @ast_transformer.hostname(o.host_matches)
-      @ast_transformer.merge_location(args, o)
       host_matches.collect do |name|
         Puppet::Resource::Type.new(:node, name, @context.merge(args))
       end
+    end
+
+    def instantiate_SiteDefinition(o, modname)
+      args = { :module_name => modname }
+
+      unless is_nop?(o.body)
+        args[:code] = Expression.new(:value => o.body)
+      end
+
+      args = @ast_transformer.merge_location(args, o)
+      Puppet::Resource::Type.new(:site, 'site', @context.merge(args))
     end
 
     # Propagates a found Function to the appropriate loader.
     # This is for 4x evaluator/loader
     #
     def instantiate_FunctionDefinition(function_definition, modname)
-      loaders = (Puppet.lookup(:loaders) { nil })
-      unless loaders
-        raise Puppet::ParseError, "Internal Error: Puppet Context ':loaders' missing - cannot define any functions"
-      end
-      loader =
-      if modname.nil? || modname == ""
-        # TODO : Later when functions can be private, a decision is needed regarding what that means.
-        #        A private environment loader could be used for logic outside of modules, then only that logic
-        #        would see the function.
-        #
-        # Use the private loader, this function may see the environment's dependencies (currently, all modules)
-        loaders.private_environment_loader()
-      else
-        # TODO : Later check if function is private, and then add it to
-        #        private_loader_for_module
-        #
-        loaders.public_loader_for_module(modname)
-      end
-      unless loader
-        raise Puppet::ParseError, "Internal Error: did not find public loader for module: '#{modname}'"
-      end
+      loader = Puppet::Pops::Loaders.find_loader(modname)
 
-      # Instantiate Function, and store it in the environment loader
+      # Instantiate Function, and store it in the loader
       typed_name, f = Puppet::Pops::Loader::PuppetFunctionInstantiator.create_from_model(function_definition, loader)
       loader.set_entry(typed_name, f, Puppet::Pops::Adapters::SourcePosAdapter.adapt(function_definition).to_uri)
 
       nil # do not want the function to inadvertently leak into 3x
+    end
+
+    # Propagates a found TypeAlias to the appropriate loader.
+    # This is for 4x evaluator/loader
+    #
+    def instantiate_TypeAlias(type_alias, modname)
+      loader = Puppet::Pops::Loaders.find_loader(modname)
+
+      # Bind the type alias to the loader using the alias
+      Puppet::Pops::Loader::TypeDefinitionInstantiator.create_from_model(type_alias, loader)
+
+      nil # do not want the type alias to inadvertently leak into 3x
+    end
+
+    # Adds the TypeMapping to the ImplementationRegistry
+    # This is for 4x evaluator/loader
+    #
+    def instantiate_TypeMapping(type_mapping, modname)
+      loader = Puppet::Pops::Loaders.find_loader(modname)
+      tf = Puppet::Pops::Types::TypeParser.new
+      lhs = tf.interpret(type_mapping.type_expr, loader)
+      rhs = tf.interpret_any(type_mapping.mapping_expr, loader)
+      Puppet::Pops::Loaders.implementation_registry.register_type_mapping(lhs, rhs, loader)
+      nil
     end
 
     def code()

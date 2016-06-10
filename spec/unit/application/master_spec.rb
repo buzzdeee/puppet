@@ -314,10 +314,32 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         @master.main
       end
 
-      it "should drop privileges if running as root" do
-        Puppet.features.stubs(:root?).returns true
+      def a_user_type_for(username)
+        user = mock 'user'
+        Puppet::Type.type(:user).expects(:new).with { |args| args[:name] == username }.returns user
+        user
+      end
 
-        Puppet::Util.expects(:chuser)
+      context "user privileges" do
+        it "should drop privileges if running as root and the puppet user exists" do
+          Puppet.features.stubs(:root?).returns true
+          a_user_type_for("puppet").expects(:exists?).returns true
+
+          Puppet::Util.expects(:chuser)
+
+          @master.main
+        end
+
+        it "should exit and log an error if running as root and the puppet user does not exist" do
+          Puppet.features.stubs(:root?).returns true
+          a_user_type_for("puppet").expects(:exists?).returns false
+          Puppet.expects(:err).with('Could not change user to puppet. User does not exist and is required to continue.')
+          expect { @master.main }.to exit_with 74
+        end
+      end
+
+      it "should log a deprecation notice when running a WEBrick server" do
+        Puppet.expects(:deprecation_warning).with("The WEBrick Puppet master server is deprecated and will be removed in a future release. Please use Puppet Server instead. See http://links.puppetlabs.com/deprecate-rack-webrick-servers for more information.")
 
         @master.main
       end
@@ -340,21 +362,25 @@ describe Puppet::Application::Master, :unless => Puppet.features.microsoft_windo
         before do
           require 'puppet/network/http/rack'
           Puppet::Network::HTTP::Rack.stubs(:new).returns(@app)
+
+          @master.options.stubs(:[]).with(:rack).returns(:true)
         end
 
         it "it should not start a daemon" do
-          @master.options.stubs(:[]).with(:rack).returns(:true)
-
           @daemon.expects(:start).never
 
           @master.main
         end
 
         it "it should return the app" do
-          @master.options.stubs(:[]).with(:rack).returns(:true)
-
           app = @master.main
           expect(app).to equal(@app)
+        end
+
+        it "should log a deprecation notice" do
+          Puppet.expects(:deprecation_warning).with("The Rack Puppet master server is deprecated and will be removed in a future release. Please use Puppet Server instead. See http://links.puppetlabs.com/deprecate-rack-webrick-servers for more information.")
+
+          @master.main
         end
       end
     end

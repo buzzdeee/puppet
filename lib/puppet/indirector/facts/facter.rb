@@ -21,8 +21,16 @@ class Puppet::Node::Facts::Facter < Puppet::Indirector::Code
   # Lookup a host's facts up in Facter.
   def find(request)
     Facter.reset
+
+    # Note: we need to setup puppet's external search paths before adding the puppetversion
+    # fact. This is because in Facter 2.x, the first `Facter.add` causes Facter to create
+    # its directory loaders which cannot be changed, meaning other external facts won't
+    # be resolved. (PUP-4607)
     self.class.setup_external_search_paths(request) if Puppet.features.external_facts?
     self.class.setup_search_paths(request)
+
+    # Initialize core Puppet facts, such as puppetversion
+    Puppet.initialize_facts
 
     result = Puppet::Node::Facts.new(request.key, Facter.to_hash)
     result.add_local_facts

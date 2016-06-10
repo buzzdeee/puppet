@@ -1,15 +1,21 @@
+module Puppet::Pops
+module Parser
 
 # Does not support "import" and parsing ruby files
 #
-class Puppet::Pops::Parser::EvaluatingParser
+class EvaluatingParser
 
   attr_reader :parser
 
   def initialize()
-    @parser = Puppet::Pops::Parser::Parser.new()
+    @parser = Parser.new()
   end
 
-  def parse_string(s, file_source = 'unknown')
+  def self.singleton
+    @instance ||= new
+  end
+
+  def parse_string(s, file_source = nil)
     @file_source = file_source
     clear()
     # Handling of syntax error can be much improved (in general), now it bails out of the parser
@@ -19,7 +25,9 @@ class Puppet::Pops::Parser::EvaluatingParser
     # Also a possible improvement (if the YAML parser returns positions) is to provide correct output of position.
     #
     begin
-      assert_and_report(parser.parse_string(s))
+      assert_and_report(parser.parse_string(s, file_source))
+    rescue Puppet::ParseErrorWithIssue => e
+      raise e
     rescue Puppet::ParseError => e
       # TODO: This is not quite right, why does not the exception have the correct file?
       e.file = @file_source unless e.file.is_a?(String) && !e.file.empty?
@@ -33,7 +41,7 @@ class Puppet::Pops::Parser::EvaluatingParser
     assert_and_report(parser.parse_file(file))
   end
 
-  def evaluate_string(scope, s, file_source='unknown')
+  def evaluate_string(scope, s, file_source = nil)
     evaluate(scope, parse_string(s, file_source))
   end
 
@@ -47,7 +55,7 @@ class Puppet::Pops::Parser::EvaluatingParser
 
   # Create a closure that can be called in the given scope
   def closure(model, scope)
-    Puppet::Pops::Evaluator::Closure.new(evaluator, model, scope)
+    Evaluator::Closure.new(evaluator, model, scope)
   end
 
   def evaluate(scope, model)
@@ -63,12 +71,16 @@ class Puppet::Pops::Parser::EvaluatingParser
   end
 
   def evaluator
-    @@evaluator ||= Puppet::Pops::Evaluator::EvaluatorImpl.new()
+    # Do not use the cached evaluator if this is a migration run
+    if (Puppet.lookup(:migration_checker) { nil })
+      return Evaluator::EvaluatorImpl.new()
+    end
+    @@evaluator ||= Evaluator::EvaluatorImpl.new()
     @@evaluator
   end
 
   def convert_to_3x(object, scope)
-    val = @@evaluator.convert(object, scope, nil)
+    val = evaluator.convert(object, scope, nil)
   end
 
   def validate(parse_result)
@@ -78,11 +90,11 @@ class Puppet::Pops::Parser::EvaluatingParser
   end
 
   def acceptor()
-    Puppet::Pops::Validation::Acceptor.new
+    Validation::Acceptor.new
   end
 
   def validator(acceptor)
-    Puppet::Pops::Validation::ValidatorFactory_4_0.new().validator(acceptor)
+    Validation::ValidatorFactory_4_0.new().validator(acceptor)
   end
 
   def assert_and_report(parse_result)
@@ -92,7 +104,7 @@ class Puppet::Pops::Parser::EvaluatingParser
     end
     validation_result = validate(parse_result)
 
-    Puppet::Pops::IssueReporter.assert_and_report(validation_result,
+    IssueReporter.assert_and_report(validation_result,
                                           :emit_warnings => true)
     parse_result
   end
@@ -143,9 +155,11 @@ class Puppet::Pops::Parser::EvaluatingParser
     escaped << '"'
   end
 
-  class EvaluatingEppParser < Puppet::Pops::Parser::EvaluatingParser
+  class EvaluatingEppParser < EvaluatingParser
     def initialize()
-      @parser = Puppet::Pops::Parser::EppParser.new()
+      @parser = EppParser.new()
     end
   end
+end
+end
 end

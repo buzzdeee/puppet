@@ -197,6 +197,10 @@ describe Puppet::Type.type(:mount), :unless => Puppet.features.microsoft_windows
       it "should not support whitespace in fstype" do
         expect { described_class.new(:name => "/foo", :ensure => :present, :fstype => 'ext 3') }.to raise_error Puppet::Error, /fstype.*whitespace/
       end
+
+      it "should not support an empty string in fstype" do
+        expect { described_class.new(:name => "/foo", :ensure => :present, :fstype => "") }.to raise_error Puppet::Error, /fstype.*empty string/
+      end
     end
 
     describe "for options" do
@@ -210,6 +214,10 @@ describe Puppet::Type.type(:mount), :unless => Puppet.features.microsoft_windows
 
       it "should not support whitespace in options" do
         expect { described_class.new(:name => "/foo", :ensure => :present, :options => ['ro','foo bar','intr']) }.to raise_error Puppet::Error, /option.*whitespace/
+      end
+
+      it "should not support an empty string in options" do
+        expect { described_class.new(:name => "/foo", :ensure => :present, :options => "") }.to raise_error Puppet::Error, /option.*empty string/
       end
     end
 
@@ -537,12 +545,20 @@ describe Puppet::Type.type(:mount), :unless => Puppet.features.microsoft_windows
     end
   end
 
-  describe "establishing autorequires" do
+  describe "establishing autorequires and autobefores" do
 
-    def create_resource(path)
+    def create_mount_resource(path)
       described_class.new(
         :name => path,
         :provider => providerclass.new(path)
+      )
+    end
+
+    def create_file_resource(path)
+      file_class = Puppet::Type.type(:file)
+      file_class.new(
+        :path => path,
+        :provider => file_class.new(:path => path).provider
       )
     end
 
@@ -555,38 +571,71 @@ describe Puppet::Type.type(:mount), :unless => Puppet.features.microsoft_windows
       catalog
     end
 
-    let(:root_mount) { create_resource("/") }
-    let(:var_mount)  { create_resource("/var") }
-    let(:log_mount)  { create_resource("/var/log") }
+    let(:root_mount) { create_mount_resource("/") }
+    let(:var_mount)  { create_mount_resource("/var") }
+    let(:log_mount)  { create_mount_resource("/var/log") }
+    let(:var_file) { create_file_resource('/var') }
+    let(:log_file) { create_file_resource('/var/log') }
+    let(:puppet_file) { create_file_resource('/var/log/puppet') }
 
     before do
-      create_catalog(root_mount, var_mount, log_mount)
+      create_catalog(root_mount, var_mount, log_mount, var_file, log_file, puppet_file)
     end
 
     it "adds no autorequires for the root mount" do
       expect(root_mount.autorequire).to be_empty
     end
 
-    it "adds the parent autorequire for a mount with one parent" do
+    it "adds the parent autorequire and the file autorequire for a mount with one parent" do
       parent_relationship = var_mount.autorequire[0]
+      file_relationship = var_mount.autorequire[1]
 
-      expect(var_mount.autorequire).to have_exactly(1).item
+      expect(var_mount.autorequire).to have_exactly(2).items
 
       expect(parent_relationship.source).to eq root_mount
       expect(parent_relationship.target).to eq var_mount
+
+      expect(file_relationship.source).to eq var_file
+      expect(file_relationship.target).to eq var_mount
     end
 
-    it "adds both parent autorequires for a mount with two parents" do
+    it "adds both parent autorequires and the file autorequire for a mount with two parents" do
       grandparent_relationship = log_mount.autorequire[0]
       parent_relationship = log_mount.autorequire[1]
+      file_relationship = log_mount.autorequire[2]
 
-      expect(log_mount.autorequire).to have_exactly(2).items
+      expect(log_mount.autorequire).to have_exactly(3).items
 
       expect(grandparent_relationship.source).to eq root_mount
       expect(grandparent_relationship.target).to eq log_mount
 
       expect(parent_relationship.source).to eq var_mount
       expect(parent_relationship.target).to eq log_mount
+
+      expect(file_relationship.source).to eq log_file
+      expect(file_relationship.target).to eq log_mount
+    end
+
+    it "adds the child autobefore for a mount with one file child" do
+      child_relationship = log_mount.autobefore[0]
+
+      expect(log_mount.autobefore).to have_exactly(1).item
+
+      expect(child_relationship.source).to eq log_mount
+      expect(child_relationship.target).to eq puppet_file
+    end
+
+    it "adds both child autobefores for a mount with two file childs" do
+      child_relationship = var_mount.autobefore[0]
+      grandchild_relationship = var_mount.autobefore[1]
+
+      expect(var_mount.autobefore).to have_exactly(2).items
+
+      expect(child_relationship.source).to eq var_mount
+      expect(child_relationship.target).to eq log_file
+
+      expect(grandchild_relationship.source).to eq var_mount
+      expect(grandchild_relationship.target).to eq puppet_file
     end
   end
 end

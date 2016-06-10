@@ -3,6 +3,8 @@ test_name "should manage user shell"
 name = "pl#{rand(999999).to_i}"
 
 confine :except, :platform => 'windows'
+confine :except, :platform => /^eos-/ # See ARISTA-37
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 agents.each do |agent|
   step "ensure the user and group do not exist"
@@ -19,7 +21,14 @@ agents.each do |agent|
   end
 
   step "modify the user with shell"
-  shell = '/bin/bash'
+
+  # We need to use an allowed shell in AIX, as according to `/etc/security/login.cfg`
+  if agent['platform'] =~ /aix/
+    shell = '/bin/ksh'
+  else
+    shell = '/bin/bash'
+  end
+
   on agent, puppet_resource('user', name, ["ensure=present", "shell=#{shell}"])
 
   step "verify the user shell matches the managed shell"

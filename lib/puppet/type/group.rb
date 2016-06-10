@@ -80,7 +80,9 @@ module Puppet
 
     newproperty(:members, :array_matching => :all, :required_features => :manages_members) do
       desc "The members of the group. For directory services where group
-      membership is stored in the group objects, not the users."
+      membership is stored in the group objects, not the users. Use
+      with auth_membership to determine whether the specified members
+      are inclusive or the minimum."
 
       def change_to_s(currentvalue, newvalue)
         currentvalue = currentvalue.join(",") if currentvalue != :absent
@@ -99,16 +101,26 @@ module Puppet
       def is_to_s(currentvalue)
         if provider.respond_to?(:members_to_s)
           currentvalue = '' if currentvalue.nil?
-          return provider.members_to_s(currentvalue.split(','))
+          currentvalue = currentvalue.is_a?(Array) ? currentvalue : currentvalue.split(',')
+
+          return provider.members_to_s(currentvalue)
         end
 
         super(currentvalue)
       end
       alias :should_to_s :is_to_s
+
+      validate do |value|
+        if provider.respond_to?(:member_valid?)
+          return provider.member_valid?(value)
+        end
+      end
     end
 
     newparam(:auth_membership, :boolean => true, :parent => Puppet::Parameter::Boolean) do
-      desc "whether the provider is authoritative for group membership."
+      desc "Whether the provider is authoritative for group membership. This
+        must be set to true to allow setting the group to no members with
+        `members => [],`."
       defaultto false
     end
 

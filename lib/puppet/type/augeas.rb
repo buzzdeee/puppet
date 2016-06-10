@@ -5,7 +5,7 @@
 #   you may not use this file except in compliance with the License.
 #   You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+#       https://www.apache.org/licenses/LICENSE-2.0
 #
 #   Unless required by applicable law or agreed to in writing, software
 #   distributed under the License is distributed on an "AS IS" BASIS,
@@ -73,9 +73,17 @@ Puppet::Type.newtype(:augeas) do
 
   newparam (:onlyif) do
     desc "Optional augeas command and comparisons to control the execution of this type.
+
+      Note: `values` is not an actual augeas API command. It calls `match` to retrieve an array of paths
+             in <MATCH_PATH> and then `get` to retrieve the values from each of the returned paths.
+
       Supported onlyif syntax:
 
       * `get <AUGEAS_PATH> <COMPARATOR> <STRING>`
+      * `values <MATCH_PATH> include <STRING>`
+      * `values <MATCH_PATH> not_include <STRING>`
+      * `values <MATCH_PATH> == <AN_ARRAY>`
+      * `values <MATCH_PATH> != <AN_ARRAY>`
       * `match <MATCH_PATH> size <COMPARATOR> <INT>`
       * `match <MATCH_PATH> include <STRING>`
       * `match <MATCH_PATH> not_include <STRING>`
@@ -109,6 +117,7 @@ Puppet::Type.newtype(:augeas) do
     * `insert <LABEL> <WHERE> <PATH>` --- Synonym for `ins`
     * `mv <PATH> <OTHER PATH>` --- Moves a node at `PATH` to the new location `OTHER PATH`
     * `move <PATH> <OTHER PATH>` --- Synonym for `mv`
+    * `rename <PATH> <LABEL>` --- Rename a node at `PATH` to a new `LABEL`
     * `defvar <NAME> <PATH>` --- Sets Augeas variable `$NAME` to `PATH`
     * `defnode <NAME> <PATH> <VALUE>` --- Sets Augeas variable `$NAME` to `PATH`, creating it with `VALUE` if needed
 

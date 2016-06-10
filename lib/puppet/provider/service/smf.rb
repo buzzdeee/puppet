@@ -1,3 +1,5 @@
+require 'timeout'
+
 # Solaris 10 SMF-style services.
 Puppet::Type.type(:service).provide :smf, :parent => :base do
   desc <<-EOT
@@ -32,11 +34,12 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
   end
 
   def self.instances
-   svcs.split("\n").select{|l| l !~ /^legacy_run/ }.collect do |line|
-     state,stime,fmri = line.split(/\s+/)
+   svcs("-H", "-o", "state,fmri" ).split("\n").select{|l| l !~ /^legacy_run/ }.collect do |line|
+     state,fmri = line.split(/\s+/)
      status =  case state
                when /online/; :running
                when /maintenance/; :maintenance
+               when /degraded/; :degraded
                else :stopped
                end
      new({:name => fmri, :ensure => status})
@@ -67,11 +70,50 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
   def startcmd
     self.setupservice
     case self.status
-    when :maintenance
+    when :maintenance, :degraded
       [command(:adm), :clear, @resource[:name]]
     else
       [command(:adm), :enable, "-s", @resource[:name]]
     end
+  end
+
+  # Wait for the service to transition into the specified state before returning.
+  # This is necessary due to the asynchronous nature of SMF services.
+  # desired_state should be online, offline, disabled, or uninitialized.
+  # See PUP-5474 for long-term solution to this issue.
+  def wait(*desired_state)
+    Timeout.timeout(60) do
+      loop do
+        states = self.service_states
+        break if desired_state.include?(states[0]) && states[1] == '-'
+        sleep(1)
+      end
+    end
+  rescue Timeout::Error
+    raise Puppet::Error.new("Timed out waiting for #{@resource[:name]} to transition states")
+  end
+
+  def start
+    # Wait for the service to actually start before returning.
+    super
+    self.wait('online')
+  end
+
+  def stop
+    # Wait for the service to actually stop before returning.
+    super
+    self.wait('offline', 'disabled', 'uninitialized')
+  end
+
+  def restart
+    # Wait for the service to actually start before returning.
+    super
+    self.wait('online')
+  end
+
+  # Determine the current and next states of a service.
+  def service_states
+    svcs("-H", "-o", "state,nstate", @resource[:name]).chomp.split
   end
 
   def status
@@ -83,7 +125,7 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
     begin
       # get the current state and the next state, and if the next
       # state is set (i.e. not "-") use it for state comparison
-      states = svcs("-H", "-o", "state,nstate", @resource[:name]).chomp.split
+      states = service_states
       state = states[1] == "-" ? states[0] : states[1]
     rescue Puppet::ExecutionFailure
       info "Could not get status on service #{self.name}"
@@ -99,6 +141,8 @@ Puppet::Type.type(:service).provide :smf, :parent => :base do
       return :stopped
     when "maintenance"
       return :maintenance
+    when "degraded"
+      return :degraded
     when "legacy_run"
       raise Puppet::Error,
         "Cannot manage legacy services through SMF"

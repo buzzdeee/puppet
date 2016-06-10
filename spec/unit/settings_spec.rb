@@ -44,7 +44,7 @@ describe Puppet::Settings do
     it "should not allow specification of default values associated with a section as an array" do
       expect {
         @settings.define_settings(:section, :myvalue => ["defaultval", "my description"])
-      }.to raise_error
+      }.to raise_error(ArgumentError, /setting definition for 'myvalue' is not a hash!/)
     end
 
     it "should not allow duplicate parameter specifications" do
@@ -117,6 +117,17 @@ describe Puppet::Settings do
       @settings.initialize_app_defaults(default_values.merge(:run_mode => :master))
 
       expect(@settings.preferred_run_mode).to eq(:master)
+    end
+
+    it "creates ancestor directories for all required app settings" do
+      # initialize_app_defaults is called in spec_helper, before we even
+      # get here, but call it here to make it explicit what we're trying
+      # to do.
+      @settings.initialize_app_defaults(default_values)
+
+      Puppet::Settings::REQUIRED_APP_SETTINGS.each do |key|
+        expect(File).to exist(File.dirname(Puppet[key]))
+      end
     end
   end
 
@@ -274,6 +285,95 @@ describe Puppet::Settings do
     it "should not flag settings memory as from CLI" do
       @settings[:myval] = "12"
       expect(@settings.set_by_cli?(:myval)).to be_falsey
+    end
+
+    it "should find no configured settings by default" do
+      expect(@settings.set_by_config?(:myval)).to be_falsey
+    end
+
+    it "should identify configured settings in memory" do
+      @settings.instance_variable_get(:@value_sets)[:memory].expects(:lookup).with(:myval).returns('foo')
+      expect(@settings.set_by_config?(:myval)).to be_truthy
+    end
+
+    it "should identify configured settings from CLI" do
+      @settings.instance_variable_get(:@value_sets)[:cli].expects(:lookup).with(:myval).returns('foo')
+      expect(@settings.set_by_config?(:myval)).to be_truthy
+    end
+
+    it "should not identify configured settings from environment by default" do
+      Puppet.lookup(:environments).expects(:get_conf).with(Puppet[:environment].to_sym).never
+      expect(@settings.set_by_config?(:manifest)).to be_falsey
+    end
+
+    it "should identify configured settings from environment by when an environment is specified" do
+      foo = mock('environment', :manifest => 'foo')
+      Puppet.lookup(:environments).expects(:get_conf).with(Puppet[:environment].to_sym).returns(foo)
+      expect(@settings.set_by_config?(:manifest, Puppet[:environment])).to be_truthy
+    end
+
+    it "should identify configured settings from the preferred run mode" do
+      user_config_text = "[#{@settings.preferred_run_mode}]\nmyval = foo"
+      seq = sequence "config_file_sequence"
+
+      Puppet.features.stubs(:root?).returns(false)
+      Puppet::FileSystem.expects(:exist?).
+        with(user_config_file_default_location).
+        returns(true).in_sequence(seq)
+      @settings.expects(:read_file).
+        with(user_config_file_default_location).
+        returns(user_config_text).in_sequence(seq)
+
+      @settings.send(:parse_config_files)
+      expect(@settings.set_by_config?(:myval)).to be_truthy
+    end
+
+    it "should identify configured settings from the specified run mode" do
+      user_config_text = "[master]\nmyval = foo"
+      seq = sequence "config_file_sequence"
+
+      Puppet.features.stubs(:root?).returns(false)
+      Puppet::FileSystem.expects(:exist?).
+        with(user_config_file_default_location).
+        returns(true).in_sequence(seq)
+      @settings.expects(:read_file).
+        with(user_config_file_default_location).
+        returns(user_config_text).in_sequence(seq)
+
+      @settings.send(:parse_config_files)
+      expect(@settings.set_by_config?(:myval, nil, :master)).to be_truthy
+    end
+
+    it "should not identify configured settings from an unspecified run mode" do
+      user_config_text = "[zaz]\nmyval = foo"
+      seq = sequence "config_file_sequence"
+
+      Puppet.features.stubs(:root?).returns(false)
+      Puppet::FileSystem.expects(:exist?).
+        with(user_config_file_default_location).
+        returns(true).in_sequence(seq)
+      @settings.expects(:read_file).
+        with(user_config_file_default_location).
+        returns(user_config_text).in_sequence(seq)
+
+      @settings.send(:parse_config_files)
+      expect(@settings.set_by_config?(:myval)).to be_falsey
+    end
+
+    it "should identify configured settings from the main section" do
+      user_config_text = "[main]\nmyval = foo"
+      seq = sequence "config_file_sequence"
+
+      Puppet.features.stubs(:root?).returns(false)
+      Puppet::FileSystem.expects(:exist?).
+        with(user_config_file_default_location).
+        returns(true).in_sequence(seq)
+      @settings.expects(:read_file).
+        with(user_config_file_default_location).
+        returns(user_config_text).in_sequence(seq)
+
+      @settings.send(:parse_config_files)
+      expect(@settings.set_by_config?(:myval)).to be_truthy
     end
 
     it "should clear the cache when setting getopt-specific values" do
@@ -637,7 +737,7 @@ describe Puppet::Settings do
 
       Puppet::FileSystem.expects(:exist?).with(myfile).returns(true)
 
-      Puppet::FileSystem.expects(:read).with(myfile).returns "[main]"
+      Puppet::FileSystem.expects(:read).with(myfile, :encoding => 'utf-8').returns "[main]"
 
       @settings.send(:parse_config_files)
     end
@@ -1723,7 +1823,7 @@ describe Puppet::Settings do
   end
 
   describe "default_certname" do
-    describe "using hostname and domainname" do
+    describe "using hostname and domain" do
       before :each do
         Puppet::Settings.stubs(:hostname_fact).returns("testhostname")
         Puppet::Settings.stubs(:domain_fact).returns("domain.test.")

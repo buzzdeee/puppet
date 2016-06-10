@@ -13,25 +13,22 @@
 # Source function library.
 . /etc/rc.d/init.d/functions
 
-PATH=/opt/puppetlabs/puppet/bin:/usr/bin:/sbin:/bin:/usr/sbin
-export PATH
-
 [ -f /etc/sysconfig/puppet ] && . /etc/sysconfig/puppet
-lockfile=${LOCKFILE-/var/lock/subsys/puppet}
-pidfile=${PIDFILE-/var/run/puppetlabs/agent.pid}
-puppetd=${PUPPETD-/opt/puppetlabs/puppet/bin/puppet}
+lockfile=/var/lock/subsys/puppet
+piddir=/var/run/puppetlabs
+pidfile=${piddir}/agent.pid
+puppetd=/opt/puppetlabs/puppet/bin/puppet
+pid=$(cat $pidfile 2> /dev/null)
 RETVAL=0
 
 PUPPET_OPTS="agent "
-[ -n "${PUPPET_SERVER}" ] && PUPPET_OPTS="${PUPPET_OPTS} --server=${PUPPET_SERVER}"
-[ -n "$PUPPET_LOG" ] && PUPPET_OPTS="${PUPPET_OPTS} --logdest=${PUPPET_LOG}"
-[ -n "$PUPPET_PORT" ] && PUPPET_OPTS="${PUPPET_OPTS} --masterport=${PUPPET_PORT}"
 
 # Determine if we can use the -p option to daemon, killproc, and status.
 # RHEL < 5 can't.
 if status | grep -q -- '-p' 2>/dev/null; then
     daemonopts="--pidfile $pidfile"
     pidopts="-p $pidfile"
+    USEINITFUNCTIONS=true
 fi
 
 # Figure out if the system just booted. Let's assume
@@ -41,6 +38,7 @@ fi
 
 start() {
     echo -n $"Starting puppet agent: "
+    mkdir -p $piddir
     daemon $daemonopts $puppetd ${PUPPET_OPTS} ${PUPPET_EXTRA_OPTS}
     RETVAL=$?
     echo
@@ -50,15 +48,40 @@ start() {
 
 stop() {
     echo -n $"Stopping puppet agent: "
-    killproc $pidopts $puppetd
-    RETVAL=$?
+    if [ "$USEINITFUNCTIONS" = "true" ]; then
+      killproc $pidopts $puppetd
+      RETVAL=$?
+    else
+      if [ -n "${pid}" ]; then
+        kill -TERM $pid >/dev/null 2>&1
+        RETVAL=$?
+      fi
+    fi
     echo
     [ $RETVAL = 0 ] && rm -f ${lockfile} ${pidfile}
+    return $RETVAL
 }
 
 reload() {
-    echo -n $"Restarting puppet agent: "
-    killproc $pidopts $puppetd -HUP
+    echo -n $"Reloading puppet agent: "
+    if [ "$USEINITFUNCTIONS" = "true" ]; then
+      killproc $pidopts $puppetd -HUP
+      RETVAL=$?
+    else
+      if [ -n "${pid}" ]; then
+        kill -HUP $pid >/dev/null 2>&1
+        RETVAL=$?
+      else
+        RETVAL=0
+      fi
+    fi
+    echo
+    return $RETVAL
+}
+
+rotate() {
+    echo -n $"Reopening log files for puppet agent: "
+    killproc $pidopts $puppetd -USR2
     RETVAL=$?
     echo
     return $RETVAL
@@ -70,9 +93,33 @@ restart() {
 }
 
 rh_status() {
-    status $pidopts $puppetd
-    RETVAL=$?
-    return $RETVAL
+    base=puppet
+    if [ "$USEINITFUNCTIONS" = "true" ]; then
+      status $pidopts $puppetd
+      RETVAL=$?
+      return $RETVAL
+    else
+      if [ -n "${pid}" ]; then
+        if `ps -p $pid | grep $pid > /dev/null 2>&1`; then
+          echo "${base} (pid ${pid}) is running..."
+          RETVAL=0
+          return $RETVAL
+        fi
+      fi
+      if [ -f "${pidfile}" ] ; then
+        echo "${base} dead but pid file exists"
+        RETVAL=1
+        return $RETVAL
+      fi
+      if [ -f "${lockfile}" ]; then
+        echo "${base} dead but subsys locked"
+        RETVAL=2
+        return $RETVAL
+      fi
+      echo "${base} is stopped"
+      RETVAL=3
+      return $RETVAL
+    fi
 }
 
 rh_status_q() {
@@ -94,6 +141,9 @@ case "$1" in
     restart)
         restart
     ;;
+    rotate)
+        rotate
+    ;;
     reload|force-reload)
         reload
     ;;
@@ -112,7 +162,7 @@ case "$1" in
         genconfig
     ;;
     *)
-        echo $"Usage: $0 {start|stop|status|restart|reload|force-reload|condrestart|once|genconfig}"
+        echo $"Usage: $0 {start|stop|status|restart|reload|force-reload|condrestart|rotate|once|genconfig}"
         exit 1
 esac
 

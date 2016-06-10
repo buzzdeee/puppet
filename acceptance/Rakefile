@@ -1,17 +1,27 @@
 require 'rake/clean'
 require 'pp'
 require 'yaml'
+require 'securerandom'
+require 'fileutils'
+require 'beaker-hostgenerator'
+require 'beaker/dsl/install_utils'
+extend Beaker::DSL::InstallUtils
 $LOAD_PATH << File.expand_path(File.join(File.dirname(__FILE__), 'lib'))
-require 'puppet/acceptance/git_utils'
-extend Puppet::Acceptance::GitUtils
 
 ONE_DAY_IN_SECS = 24 * 60 * 60
 REPO_CONFIGS_DIR = "repo-configs"
 CLEAN.include('*.tar', REPO_CONFIGS_DIR, 'merged_options.rb')
 
-module HarnessOptions
+# If elsewhere we're depending on internal network resources
+# then assume we can depend on them here
+EPEL_MIRROR = ENV['BEAKER_EPEL_MIRROR']
 
-  DEFAULTS = {
+# Default test target if none specified
+DEFAULT_MASTER_TEST_TARGET = 'redhat7-64m'
+DEFAULT_TEST_TARGETS = "#{DEFAULT_MASTER_TEST_TARGET}a-windows2012r2-64a"
+
+module HarnessOptions
+  defaults = {
     :type => 'git',
     :helper => ['lib/helper.rb'],
     :tests  => ['tests'],
@@ -24,11 +34,13 @@ module HarnessOptions
     :xml => true,
     :timesync => false,
     :repo_proxy => true,
-    :add_el_extras => true,
+    :add_el_extras => false,
     :preserve_hosts => 'onfail',
     :forge_host => 'forge-aio01-petest.puppetlabs.com',
-    :'master-start-curl-retries' => 30,
+    :'master-start-curl-retries' => 30
   }
+
+  DEFAULTS = EPEL_MIRROR ? defaults.merge(:epel_url => EPEL_MIRROR) : defaults
 
   class Aggregator
     attr_reader :mode
@@ -71,7 +83,7 @@ module HarnessOptions
   end
 end
 
-def beaker_test(mode = :packages, options = {})
+def beaker_test(mode = :aio, options = {})
   delete_options = options.delete(:__delete_options__) || []
   final_options = HarnessOptions.options(mode, options)
   preserve_config = final_options.delete(:__preserve_config__)
@@ -80,7 +92,7 @@ def beaker_test(mode = :packages, options = {})
     # Build up project git urls based on git server and fork env variables or defaults
     final_options[:install].map! do |install|
       raise(ArgumentError, "Missing Git URL within options hash. Install URL is nil.") if install.nil?
-      if md = /^(\w+)#(\w+)$/.match(install)
+      if md = /^(\w+)#([\d.\w]+)$/.match(install)
         project, project_sha = md.captures
         "#{build_giturl(project)}##{project_sha}"
       elsif md = /^(\w+)$/.match(install)
@@ -108,7 +120,23 @@ EOS
   tests = ENV['TESTS'] || ENV['TEST']
   tests_opt = "--tests=#{tests}" if tests
 
-  config_opt = "--hosts=#{config}" if config
+  if config and File.exists?(config)
+    config_opt = "--hosts=#{config}"
+  else
+    if agent_target = ENV['TEST_TARGET']
+      master_target = ENV['MASTER_TEST_TARGET'] || DEFAULT_MASTER_TEST_TARGET
+      targets = "#{master_target}-#{agent_target}"
+    else
+      targets = DEFAULT_TEST_TARGETS
+    end
+    cli = BeakerHostGenerator::CLI.new([targets, '--disable-default-role', '--osinfo-version', '1'])
+    ENV['BEAKER_HOSTS'] = "tmp/#{targets}-#{SecureRandom.uuid}.yaml"
+    FileUtils.mkdir_p('tmp')
+    File.open(config, 'w') do |fh|
+      fh.print(cli.execute)
+    end
+    config_opt = "--hosts=#{config}"
+  end
 
   overriding_options = ENV['OPTIONS']
 
@@ -233,7 +261,7 @@ def print_preserved(preserved)
 end
 
 def beaker_run_type
-  type = ENV['TYPE'] || :packages
+  type = ENV['TYPE'] || :aio
   type = type.to_sym
 end
 
@@ -242,20 +270,48 @@ def sha
 end
 
 def config
-  ENV['CONFIG']
+  ENV['BEAKER_HOSTS']
+end
+
+
+def get_test_sample
+  # This set represents a reasonable sample of puppet acceptance tests,
+  # covering a wide range of features and code susceptible to regressions.
+  tests = [ 'tests/direct_puppet/cached_catalog_remediate_local_drift.rb',
+            'tests/resource/file/content_attribute.rb',
+            'tests/environment/environment_scenario-default.rb',
+            'tests/puppet_apply_basics.rb',
+            'tests/modules/install/basic_install.rb',
+            'tests/face/loadable_from_modules.rb',
+            'tests/language/functions_in_puppet_language.rb',
+            'tests/node/check_woy_cache_works.rb',
+            'tests/parser_functions/calling_all_functions.rb',
+            'tests/ticket_4622_filebucket_diff_test.rb',
+            'tests/pluginsync/4420_pluginfacts_should_be_resolvable_on_agent.rb',
+            'tests/ssl/puppet_cert_generate_and_autosign.rb',
+            'tests/resource/service/puppet_mcollective_service_management.rb'
+          ]
+
+  # Add any tests modified within the last two weeks to the list
+  # Note that we use diff-filter to only include (A)dded or (M)odified
+  # files, carefully omitting (D)eleted files since, well, they're gone now.
+  modified = `git log --diff-filter=AM --name-only --pretty="format:" --since 2.weeks ./tests`
+  tests += modified.split("\n").reject { |s| s.empty? }.collect { |s| s.sub('acceptance/', '')}
+
+  tests.uniq
 end
 
 namespace :ci do
-
   task :check_env do
     raise(USAGE) unless sha
   end
 
   namespace :test do
-
     USAGE = <<-EOS
 Requires commit SHA to be put under test as environment variable: SHA='<sha>'.
-Also must set CONFIG=config/nodes/foo.yaml or include it in an options.rb for Beaker.
+Also must set BEAKER_HOSTS=config/nodes/foo.yaml or include it in an options.rb for Beaker,
+or specify TEST_TARGET in a form beaker-hostgenerator accepts, e.g. ubuntu1504-64a.
+You may override the default master test target by specifying MASTER_TEST_TARGET.
 You may set TESTS=path/to/test,and/more/tests.
 You may set additional Beaker OPTIONS='--more --options'
 If testing from git checkouts, you may optionally set the github fork to checkout from using PUPPET_FORK='some-other-puppet-fork' (you may change the HIERA_FORK and FACTER_FORK as well if you wish).
@@ -265,12 +321,15 @@ If there is a Beaker options hash in a ./local_options.rb, it will be included. 
 EOS
 
     desc <<-EOS
-Run the acceptance tests through Beaker and install packages on the configuration targets.
-#{USAGE}
+Run a limited but representative subset of acceptance tests through Beaker and install packages as part of the AIO puppet-agent installation. This task is intended to reduce testing time on a per-commit basis.
+
+  $ env SHA=<full sha> bundle exec rake ci:test:quick
 EOS
-    task :packages => 'ci:check_env' do
-      beaker_test
-    end
+
+  task :quick => 'ci:check_env' do
+    ENV['TESTS'] = get_test_sample.join(",")
+    beaker_test(:aio)
+  end
 
     desc <<-EOS
 Run the acceptance tests through Beaker and install packages as part of the AIO puppet-agent installation.
@@ -278,6 +337,17 @@ Run the acceptance tests through Beaker and install packages as part of the AIO 
 EOS
     task :aio => 'ci:check_env' do
       beaker_test(:aio)
+    end
+
+    desc <<-EOS
+Install puppet as a gem on a predefined set of hosts using Beaker, and run a basic smoke test.
+
+  $ env SHA=<full sha> bundle exec rake:ci:gem
+EOS
+    task :gem => 'ci:check_env' do
+      ENV['TESTS'] = 'setup/gem/pre-suite/010_GemInstall.rb'
+      ENV['BEAKER_HOSTS'] = 'config/nodes/gem.yaml'
+      beaker_test(:gem)
     end
 
     desc <<-EOS
@@ -296,7 +366,7 @@ EOS
 
   desc <<-EOS
 Run an acceptance test for a given node configuration and preserve the hosts.
-Defaults to a packages run, but you can set it to 'git' with TYPE='git'.
+Defaults to an aio run, but you can set it to 'git' with TYPE='git'.
 #{USAGE}
   EOS
   task :test_and_preserve_hosts => 'ci:check_env'  do
@@ -327,7 +397,7 @@ You can go back through the last SECS_AGO logs.  Default is one day ago in secs.
   desc <<-EOS
 Rerun an acceptance test using the last captured preserved_config.yaml to skip provisioning.
 Or specify a CONFIG_NUMBER from `rake ci:list_preserved`.
-Defaults to a packages run, but you can set it to 'git' with TYPE='git'.
+Defaults to an aio run, but you can set it to 'git' with TYPE='git'.
   EOS
   task :test_against_preserved_hosts do
     config_number = (ENV['CONFIG_NUMBER'] || 0).to_i
@@ -342,15 +412,8 @@ Defaults to a packages run, but you can set it to 'git' with TYPE='git'.
       :no_provision => true,
       :preserve_hosts => 'always',
     }
-    run_type = beaker_run_type
-    if run_type == :packages
-      options.merge!(:pre_suite => [
-        'setup/packages/pre-suite/015_PackageHostsPresets.rb',
-        'setup/packages/pre-suite/045_EnsureMasterStartedOnPassenger.rb',
-      ])
-    else
-      options.merge!(:__delete_options__ => [:pre_suite])
-    end
+    options.merge!(:__delete_options__ => [:pre_suite])
+
     beaker_test(beaker_run_type, options)
   end
 end

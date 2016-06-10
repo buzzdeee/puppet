@@ -24,13 +24,15 @@ describe Puppet::Util do
   end
 
   describe "#withenv" do
+    let(:mode) { Puppet.features.microsoft_windows? ? :windows : :posix }
+
     before :each do
       @original_path = ENV["PATH"]
       @new_env = {:PATH => "/some/bogus/path"}
     end
 
     it "should change environment variables within the block then reset environment variables to their original values" do
-      Puppet::Util.withenv @new_env do
+      Puppet::Util.withenv @new_env, mode do
         expect(ENV["PATH"]).to eq("/some/bogus/path")
       end
       expect(ENV["PATH"]).to eq(@original_path)
@@ -38,7 +40,7 @@ describe Puppet::Util do
 
     it "should reset environment variables to their original values even if the block fails" do
       begin
-        Puppet::Util.withenv @new_env do
+        Puppet::Util.withenv @new_env, mode do
           expect(ENV["PATH"]).to eq("/some/bogus/path")
           raise "This is a failure"
         end
@@ -50,7 +52,7 @@ describe Puppet::Util do
     it "should reset environment variables even when they are set twice" do
       # Setting Path & Environment parameters in Exec type can cause weirdness
       @new_env["PATH"] = "/someother/bogus/path"
-      Puppet::Util.withenv @new_env do
+      Puppet::Util.withenv @new_env, mode do
         # When assigning duplicate keys, can't guarantee order of evaluation
         expect(ENV["PATH"]).to match(/\/some.*\/bogus\/path/)
       end
@@ -60,12 +62,119 @@ describe Puppet::Util do
     it "should remove any new environment variables after the block ends" do
       @new_env[:FOO] = "bar"
       ENV["FOO"] = nil
-      Puppet::Util.withenv @new_env do
+      Puppet::Util.withenv @new_env, mode do
         expect(ENV["FOO"]).to eq("bar")
       end
       expect(ENV["FOO"]).to eq(nil)
     end
+  end
 
+  describe "#withenv on POSIX", :unless => Puppet.features.microsoft_windows? do
+    it "should preserve case" do
+      # start with lower case key,
+      env_key = SecureRandom.uuid.downcase
+
+      begin
+        original_value = 'hello'
+        ENV[env_key] = original_value
+        new_value = 'goodbye'
+
+        Puppet::Util.withenv({env_key.upcase => new_value}, :posix) do
+          expect(ENV[env_key]).to eq(original_value)
+          expect(ENV[env_key.upcase]).to eq(new_value)
+        end
+
+        expect(ENV[env_key]).to eq(original_value)
+        expect(ENV[env_key.upcase]).to be_nil
+      ensure
+        ENV.delete(env_key)
+      end
+    end
+  end
+
+  describe "#withenv on Windows", :if => Puppet.features.microsoft_windows? do
+
+    let(:process) { Puppet::Util::Windows::Process }
+
+    it "should ignore case" do
+      # start with lower case key, ensuring string is not entirely numeric
+      env_key = SecureRandom.uuid.downcase + 'a'
+
+      begin
+        original_value = 'hello'
+        ENV[env_key] = original_value
+        new_value = 'goodbye'
+
+        Puppet::Util.withenv({env_key.upcase => new_value}, :windows) do
+          expect(ENV[env_key]).to eq(new_value)
+          expect(ENV[env_key.upcase]).to eq(new_value)
+        end
+
+        expect(ENV[env_key]).to eq(original_value)
+        expect(ENV[env_key.upcase]).to eq(original_value)
+      ensure
+        ENV.delete(env_key)
+      end
+    end
+
+    it "works around Ruby bug 8822 (which fails to preserve UTF-8 properly when accessing ENV)" do
+      env_var_name = SecureRandom.uuid
+      utf_8_bytes = [225, 154, 160] # rune ᚠ
+      utf_8_str = env_var_name + utf_8_bytes.pack('c*').force_encoding(Encoding::UTF_8)
+
+      Puppet::Util.withenv({utf_8_str => utf_8_str}, :windows) do
+        # the true Windows environemnt APIs see the variables correctly
+        expect(process.get_environment_strings[utf_8_str]).to eq(utf_8_str)
+
+        # document buggy Ruby behavior here for https://bugs.ruby-lang.org/issues/8822
+        # Ruby retrieves / stores ENV names in the current codepage
+        # when these tests no longer pass, Ruby has fixed its bugs and workarounds can be removed
+        # interestingly we would expect some of these tests to fail when codepage is 65001
+        # but instead the env values are in Encoding::ASCII_8BIT!
+
+        # both a string in UTF-8 and current codepage are deemed valid keys to the hash
+        # which in a sane world shouldn't be true
+        codepage_key = utf_8_str.dup.force_encoding(Encoding.default_external)
+        expect(ENV.key?(codepage_key)).to eq(true)
+        expect(ENV.key?(utf_8_str)).to eq(true)
+        # similarly the value stored at the key is in current codepage and won't match UTF-8 value
+        env_value = ENV[utf_8_str]
+        expect(env_value).to_not eq(utf_8_str)
+        expect(env_value.encoding).to_not eq(Encoding::UTF_8)
+        # but it can be forced back to UTF-8 to make it match.. ugh
+        converted_value = ENV[utf_8_str].dup.force_encoding(Encoding::UTF_8)
+        expect(converted_value).to eq(utf_8_str)
+      end
+
+      # real environment shouldn't have env var anymore
+      expect(process.get_environment_strings[utf_8_str]).to eq(nil)
+    end
+
+    it "should preseve existing environment and should not corrupt UTF-8 environment variables" do
+      env_var_name = SecureRandom.uuid
+      utf_8_bytes = [225, 154, 160] # rune ᚠ
+      utf_8_str = env_var_name + utf_8_bytes.pack('c*').force_encoding(Encoding::UTF_8)
+      env_var_name_utf_8 = utf_8_str
+
+      begin
+        # UTF-8 name and value
+        process.set_environment_variable(env_var_name_utf_8, utf_8_str)
+        # ASCII name / UTF-8 value
+        process.set_environment_variable(env_var_name, utf_8_str)
+
+        original_keys = process.get_environment_strings.keys.to_a
+        Puppet::Util.withenv({}, :windows) { }
+
+        env = process.get_environment_strings
+
+        expect(env[env_var_name]).to eq(utf_8_str)
+        expect(env[env_var_name_utf_8]).to eq(utf_8_str)
+        expect(env.keys.to_a).to eq(original_keys)
+      ensure
+        process.set_environment_variable(env_var_name_utf_8, nil)
+        process.set_environment_variable(env_var_name, nil)
+      end
+    end
   end
 
   describe "#absolute_path?" do
@@ -229,11 +338,30 @@ describe Puppet::Util do
       (0..256).each {|n| IO.stubs(:new) }
     end
 
-    it "should close all open file descriptors except stdin/stdout/stderr" do
+    it "should close all open file descriptors except stdin/stdout/stderr when /proc/self/fd exists" do
+      # This is ugly, but I can't really think of a better way to do it without
+      # letting it actually close fds, which seems risky
+      fds = [".", "..","0","1","2","3","5","100","1000"]
+      fds.each do |fd|
+        if fd == '.' || fd == '..'
+          next
+        elsif ['0', '1', '2'].include? fd
+          IO.expects(:new).with(fd.to_i).never
+        else
+          IO.expects(:new).with(fd.to_i).returns mock('io', :close)
+        end
+      end
+
+      Dir.stubs(:foreach).with('/proc/self/fd').multiple_yields(*fds)
+      Puppet::Util.safe_posix_fork
+    end
+
+    it "should close all open file descriptors except stdin/stdout/stderr when /proc/self/fd doesn't exists" do
       # This is ugly, but I can't really think of a better way to do it without
       # letting it actually close fds, which seems risky
       (0..2).each {|n| IO.expects(:new).with(n).never}
-      (3..256).each {|n| IO.expects(:new).with(n).returns mock('io', :close) }
+      (3..256).each { |n| IO.expects(:new).with(n).returns mock('io', :close)  }
+      Dir.stubs(:foreach).with('/proc/self/fd') { raise Errno::ENOENT }
 
       Puppet::Util.safe_posix_fork
     end
@@ -305,7 +433,8 @@ describe Puppet::Util do
       end
 
       it "should walk the search PATH returning the first executable" do
-        ENV.stubs(:[]).with('PATH').returns(File.expand_path('/bin'))
+        Puppet::Util.stubs(:get_env).with('PATH').returns(File.expand_path('/bin'))
+        Puppet::Util.stubs(:get_env).with('PATHEXT').returns(nil)
 
         expect(Puppet::Util.which('foo')).to eq(path)
       end
@@ -321,11 +450,11 @@ describe Puppet::Util do
 
       describe "when a file extension is specified" do
         it "should walk each directory in PATH ignoring PATHEXT" do
-          ENV.stubs(:[]).with('PATH').returns(%w[/bar /bin].map{|dir| File.expand_path(dir)}.join(File::PATH_SEPARATOR))
+          Puppet::Util.stubs(:get_env).with('PATH').returns(%w[/bar /bin].map{|dir| File.expand_path(dir)}.join(File::PATH_SEPARATOR))
+          Puppet::Util.stubs(:get_env).with('PATHEXT').returns('.FOOBAR')
 
           FileTest.expects(:file?).with(File.join(File.expand_path('/bar'), 'foo.CMD')).returns false
 
-          ENV.expects(:[]).with('PATHEXT').never
           expect(Puppet::Util.which('foo.CMD')).to eq(path)
         end
       end
@@ -333,8 +462,8 @@ describe Puppet::Util do
       describe "when a file extension is not specified" do
         it "should walk each extension in PATHEXT until an executable is found" do
           bar = File.expand_path('/bar')
-          ENV.stubs(:[]).with('PATH').returns("#{bar}#{File::PATH_SEPARATOR}#{base}")
-          ENV.stubs(:[]).with('PATHEXT').returns(".EXE#{File::PATH_SEPARATOR}.CMD")
+          Puppet::Util.stubs(:get_env).with('PATH').returns("#{bar}#{File::PATH_SEPARATOR}#{base}")
+          Puppet::Util.stubs(:get_env).with('PATHEXT').returns(".EXE#{File::PATH_SEPARATOR}.CMD")
 
           exts = sequence('extensions')
           FileTest.expects(:file?).in_sequence(exts).with(File.join(bar, 'foo.EXE')).returns false
@@ -346,8 +475,8 @@ describe Puppet::Util do
         end
 
         it "should walk the default extension path if the environment variable is not defined" do
-          ENV.stubs(:[]).with('PATH').returns(base)
-          ENV.stubs(:[]).with('PATHEXT').returns(nil)
+          Puppet::Util.stubs(:get_env).with('PATH').returns(base)
+          Puppet::Util.stubs(:get_env).with('PATHEXT').returns(nil)
 
           exts = sequence('extensions')
           %w[.COM .EXE .BAT].each do |ext|
@@ -359,8 +488,8 @@ describe Puppet::Util do
         end
 
         it "should fall back if no extension matches" do
-          ENV.stubs(:[]).with('PATH').returns(base)
-          ENV.stubs(:[]).with('PATHEXT').returns(".EXE")
+          Puppet::Util.stubs(:get_env).with('PATH').returns(base)
+          Puppet::Util.stubs(:get_env).with('PATHEXT').returns(".EXE")
 
           FileTest.stubs(:file?).with(File.join(base, 'foo.EXE')).returns false
           FileTest.stubs(:file?).with(File.join(base, 'foo')).returns true

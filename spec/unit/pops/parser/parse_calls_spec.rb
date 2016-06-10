@@ -26,6 +26,10 @@ describe "egrammar parsing function calls" do
         expect(dump(parse("foo(bar)"))).to eq("(invoke foo bar)")
       end
 
+      it "notice {a=>2}" do
+        expect(dump(parse("notice {a => 2}"))).to eq("(invoke notice ({} ('a' 2)))")
+      end
+
       it "foo(bar,)" do
         expect(dump(parse("foo(bar,)"))).to eq("(invoke foo bar)")
       end
@@ -36,6 +40,10 @@ describe "egrammar parsing function calls" do
 
       it "notice fqdn_rand(30)" do
         expect(dump(parse("notice fqdn_rand(30)"))).to eq('(invoke notice (call fqdn_rand 30))')
+      end
+
+      it "notice type(42)" do
+        expect(dump(parse("notice type(42)"))).to eq('(invoke notice (call type 42))')
       end
     end
 
@@ -94,6 +102,14 @@ describe "egrammar parsing function calls" do
         "  (= $b $x)",
         ")))"
         ].join("\n"))
+    end
+
+    it "notice 42.type()" do
+      expect(dump(parse("notice 42.type()"))).to eq('(invoke notice (call-method (. 42 type)))')
+    end
+
+    it "notice 42.type(detailed)" do
+      expect(dump(parse("notice 42.type(detailed)"))).to eq('(invoke notice (call-method (. 42 type) detailed))')
     end
   end
 

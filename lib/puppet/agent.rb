@@ -1,4 +1,5 @@
 require 'puppet/application'
+require 'puppet/error'
 
 # A general class for triggering a run of another
 # class.
@@ -9,11 +10,12 @@ class Puppet::Agent
   require 'puppet/agent/disabler'
   include Puppet::Agent::Disabler
 
-  attr_reader :client_class, :client, :splayed, :should_fork
+  require 'puppet/util/splayer'
+  include Puppet::Util::Splayer
+
+  attr_reader :client_class, :client, :should_fork
 
   def initialize(client_class, should_fork=true)
-    @splayed = false
-
     @should_fork = can_fork? && should_fork
     @client_class = client_class
   end
@@ -28,10 +30,6 @@ class Puppet::Agent
 
   # Perform a run with our client.
   def run(client_options = {})
-    if running?
-      Puppet.notice "Run of #{client_class} already in progress; skipping  (#{lockfile_path} exists)"
-      return
-    end
     if disabled?
       Puppet.notice "Skipping run of #{client_class}; administratively disabled (Reason: '#{disable_message}');\nUse 'puppet agent --enable' to re-enable."
       return
@@ -43,8 +41,11 @@ class Puppet::Agent
       result = run_in_fork(should_fork) do
         with_client do |client|
           begin
-            client_args = client_options.merge(:pluginsync => Puppet[:pluginsync])
+            client_args = client_options.merge(:pluginsync => Puppet::Configurer.should_pluginsync?)
             lock { client.run(client_args) }
+          rescue Puppet::LockError
+            Puppet.notice "Run of #{client_class} already in progress; skipping  (#{lockfile_path} exists)"
+            return
           rescue StandardError => detail
             Puppet.log_exception(detail, "Could not run #{client_class}: #{detail}")
           end
@@ -58,22 +59,6 @@ class Puppet::Agent
 
   def stopping?
     Puppet::Application.stop_requested?
-  end
-
-  # Have we splayed already?
-  def splayed?
-    splayed
-  end
-
-  # Sleep when splay is enabled; else just return.
-  def splay(do_splay = Puppet[:splay])
-    return unless do_splay
-    return if splayed?
-
-    time = rand(Puppet[:splaylimit] + 1)
-    Puppet.info "Sleeping for #{time} seconds (splay is enabled)"
-    sleep(time)
-    @splayed = true
   end
 
   def run_in_fork(forking = true)

@@ -12,11 +12,13 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
 
   commands :update_rc => "/usr/sbin/update-rc.d"
   # note this isn't being used as a command until
-  # http://projects.reductivelabs.com/issues/2538
+  # https://projects.puppetlabs.com/issues/2538
   # is resolved.
   commands :invoke_rc => "/usr/sbin/invoke-rc.d"
+  commands :service => "/usr/sbin/service"
 
-  defaultfor :operatingsystem => :debian
+  defaultfor :operatingsystem => :cumuluslinux
+  defaultfor :operatingsystem => :debian, :operatingsystemmajrelease => ['5','6','7']
 
   # Remove the symlinks
   def disable
@@ -30,7 +32,7 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
 
   def enabled?
     # TODO: Replace system call when Puppet::Util::Execution.execute gives us a way
-    # to determine exit status.  http://projects.reductivelabs.com/issues/2538
+    # to determine exit status.  https://projects.puppetlabs.com/issues/2538
     system("/usr/sbin/invoke-rc.d", "--quiet", "--query", @resource[:name], "start")
 
     # 104 is the exit status when you query start an enabled service.
@@ -61,5 +63,12 @@ Puppet::Type.type(:service).provide :debian, :parent => :init do
   def enable
     update_rc "-f", @resource[:name], "remove"
     update_rc @resource[:name], "defaults"
+  end
+
+  def statuscmd
+      # /usr/sbin/service provides an abstraction layer which is able to query services
+      # independent of the init system used.
+      # See https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=775795
+    (@resource[:hasstatus] == :true) && [command(:service), @resource[:name], "status"]
   end
 end

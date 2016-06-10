@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 require 'puppet'
 require 'puppet/util/log'
 require 'puppet/util/metric'
@@ -104,6 +105,24 @@ class Type
     # @return [Array<Puppet::Property>] The list of declared properties for the resource type.
     # The returned lists contains instances if Puppet::Property or its subclasses.
     attr_reader :properties
+  end
+
+  # Allow declaring that a type is actually a capability
+  class << self
+    attr_accessor :is_capability
+
+    def is_capability?
+      is_capability
+    end
+  end
+
+  # Returns whether this type represents an application instance; since
+  # only defined types, i.e., instances of Puppet::Resource::Type can
+  # represent application instances, this implementation always returns
+  # +false+. Having this method though makes code checking whether a
+  # resource is an application instance simpler
+  def self.application?
+      false
   end
 
   # Returns all the attribute names of the type in the appropriate order.
@@ -639,7 +658,7 @@ class Type
   def []=(name,value)
     name = name.intern
 
-    fail("Invalid parameter #{name}") unless self.class.validattr?(name)
+    fail("no parameter named '#{name}'") unless self.class.validattr?(name)
 
     if name == :name && nv = name_var
       name = nv
@@ -1025,6 +1044,12 @@ class Type
     insync
   end
 
+  # Says if the ensure property should be retrieved if the resource is ensurable
+  # Defaults to true. Some resource type classes can override it
+  def self.needs_ensure_retrieved
+    true
+  end
+
   # Retrieves the current value of all contained properties.
   # Parameters and meta-parameters are not included in the result.
   # @todo As oposed to all non contained properties? How is this different than any of the other
@@ -1039,7 +1064,7 @@ class Type
     # Provide the name, so we know we'll always refer to a real thing
     result[:name] = self[:name] unless self[:name] == title
 
-    if ensure_prop = property(:ensure) or (self.class.validattr?(:ensure) and ensure_prop = newattr(:ensure))
+    if ensure_prop = property(:ensure) or (self.class.needs_ensure_retrieved and self.class.validattr?(:ensure) and ensure_prop = newattr(:ensure))
       result[:ensure] = ensure_state = ensure_prop.retrieve
     else
       ensure_state = nil
@@ -1227,7 +1252,7 @@ class Type
       event _would_ have been sent.
 
       **Important note:**
-      [The `noop` setting](http://docs.puppetlabs.com/references/latest/configuration.html#noop)
+      [The `noop` setting](https://docs.puppetlabs.com/puppet/latest/reference/configuration.html#noop)
       allows you to globally enable or disable noop mode, but it will _not_ override
       the `noop` metaparameter on individual resources. That is, the value of the
       global `noop` setting will _only_ affect resources that do not have an explicit
@@ -1247,7 +1272,7 @@ class Type
       The value of this metaparameter must be the `name` of a `schedule`
       resource. This means you must declare a schedule resource, then
       refer to it by name; see
-      [the docs for the `schedule` type](http://docs.puppetlabs.com/references/latest/type.html#schedule)
+      [the docs for the `schedule` type](https://docs.puppetlabs.com/puppet/latest/reference/type.html#schedule)
       for more info.
 
           schedule { 'everyday':
@@ -1422,7 +1447,7 @@ class Type
           }
 
       Tags are useful for things like applying a subset of a host's configuration
-      with [the `tags` setting](/references/latest/configuration.html#tags)
+      with [the `tags` setting](/puppet/latest/reference/configuration.html#tags)
       (e.g. `puppet agent --test --tags bootstrap`)."
 
     munge do |tags|
@@ -1512,12 +1537,12 @@ class Type
             :event => self.class.events,
             :callback => method
           }
-          self.debug("subscribes to #{related_resource.ref}")
+          self.debug { "subscribes to #{related_resource.ref}" }
         else
           # If there's no callback, there's no point in even adding
           # a label.
           subargs = nil
-          self.debug("requires #{related_resource.ref}")
+          self.debug { "subscribes to #{related_resource.ref}" }
         end
 
         Puppet::Relationship.new(source, target, subargs)
@@ -1539,7 +1564,7 @@ class Type
 
   newmetaparam(:require, :parent => RelationshipMetaparam, :attributes => {:direction => :in, :events => :NONE}) do
     desc "One or more resources that this resource depends on, expressed as
-      [resource references](http://docs.puppetlabs.com/puppet/latest/reference/lang_datatypes.html#resource-references).
+      [resource references](https://docs.puppetlabs.com/puppet/latest/reference/lang_data_resource_reference.html).
       Multiple resources can be specified as an array of references. When this
       attribute is present:
 
@@ -1548,12 +1573,12 @@ class Type
       This is one of the four relationship metaparameters, along with
       `before`, `notify`, and `subscribe`. For more context, including the
       alternate chaining arrow (`->` and `~>`) syntax, see
-      [the language page on relationships](http://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
+      [the language page on relationships](https://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
   end
 
   newmetaparam(:subscribe, :parent => RelationshipMetaparam, :attributes => {:direction => :in, :events => :ALL_EVENTS, :callback => :refresh}) do
     desc "One or more resources that this resource depends on, expressed as
-      [resource references](http://docs.puppetlabs.com/puppet/latest/reference/lang_datatypes.html#resource-references).
+      [resource references](https://docs.puppetlabs.com/puppet/latest/reference/lang_data_resource_reference.html).
       Multiple resources can be specified as an array of references. When this
       attribute is present:
 
@@ -1566,12 +1591,12 @@ class Type
       This is one of the four relationship metaparameters, along with
       `before`, `require`, and `notify`. For more context, including the
       alternate chaining arrow (`->` and `~>`) syntax, see
-      [the language page on relationships](http://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
+      [the language page on relationships](https://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
   end
 
   newmetaparam(:before, :parent => RelationshipMetaparam, :attributes => {:direction => :out, :events => :NONE}) do
     desc "One or more resources that depend on this resource, expressed as
-      [resource references](http://docs.puppetlabs.com/puppet/latest/reference/lang_datatypes.html#resource-references).
+      [resource references](https://docs.puppetlabs.com/puppet/latest/reference/lang_data_resource_reference.html).
       Multiple resources can be specified as an array of references. When this
       attribute is present:
 
@@ -1580,12 +1605,12 @@ class Type
       This is one of the four relationship metaparameters, along with
       `require`, `notify`, and `subscribe`. For more context, including the
       alternate chaining arrow (`->` and `~>`) syntax, see
-      [the language page on relationships](http://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
+      [the language page on relationships](https://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
   end
 
   newmetaparam(:notify, :parent => RelationshipMetaparam, :attributes => {:direction => :out, :events => :ALL_EVENTS, :callback => :refresh}) do
     desc "One or more resources that depend on this resource, expressed as
-      [resource references](http://docs.puppetlabs.com/puppet/latest/reference/lang_datatypes.html#resource-references).
+      [resource references](https://docs.puppetlabs.com/puppet/latest/reference/lang_data_resource_reference.html).
       Multiple resources can be specified as an array of references. When this
       attribute is present:
 
@@ -1598,7 +1623,7 @@ class Type
       This is one of the four relationship metaparameters, along with
       `before`, `require`, and `subscribe`. For more context, including the
       alternate chaining arrow (`->` and `~>`) syntax, see
-      [the language page on relationships](http://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
+      [the language page on relationships](https://docs.puppetlabs.com/puppet/latest/reference/lang_relationships.html)."
   end
 
   newmetaparam(:stage) do
@@ -1611,7 +1636,7 @@ class Type
       By default, all classes are declared in the `main` stage. To assign a class
       to a different stage, you must:
 
-      * Declare the new stage as a [`stage` resource](http://docs.puppetlabs.com/references/latest/type.html#stage).
+      * Declare the new stage as a [`stage` resource](https://docs.puppetlabs.com/puppet/latest/reference/type.html#stage).
       * Declare an order relationship between the new stage and the `main` stage.
       * Use the resource-like syntax to declare the class, and set the `stage`
         metaparameter to the name of the desired stage.
@@ -1627,6 +1652,57 @@ class Type
           }
     }
   end
+
+  newmetaparam(:export, :parent => RelationshipMetaparam, :attributes => {:direction => :out, :events => :NONE}) do
+          desc <<EOS
+Export a capability resource.
+
+The value of this parameter must be a reference to a capability resource,
+or an array of such references. Each capability resource referenced here
+will be instantiated in the node catalog and exported to consumers of this
+resource. The title of the capability resource will be the title given in
+the reference, and all other attributes of the resource will be filled
+according to the corresponding produces statement.
+
+It is an error if this metaparameter references resources whose type is not
+a capability type, or of there is no produces clause for the type of the
+current resource and the capability resource mentioned in this parameter.
+
+For example:
+
+define web(..) { .. }
+Web produces Http { .. }
+web { server:
+  export => Http[main_server]
+}
+EOS
+  end
+
+  newmetaparam(:consume, :parent => RelationshipMetaparam, :attributes => {:direction => :in, :events => :NONE}) do
+          desc <<EOS
+Consume a capability resource.
+
+The value of this parameter must be a reference to a capability resource,
+or an array of such references. Each capability resource referenced here
+must have been exported by another resource in the same environment.
+
+The referenced capability resource(s) will be looked up, added to the
+current node catalog, and processed following the underlying consumes
+clause.
+
+It is an error if this metaparameter references resources whose type is not
+a capability type, or of there is no consumes clause for the type of the
+current resource and the capability resource mentioned in this parameter.
+
+For example:
+
+define web(..) { .. }
+Web consumes Sql { .. }
+web { server:
+  consume => Sql[my_db]
+}
+EOS
+end
 
   ###############################
   # All of the provider plumbing for the resource types.
@@ -1795,7 +1871,7 @@ class Type
   def self.providify
     return if @paramhash.has_key? :provider
 
-    newparam(:provider) do
+    param = newparam(:provider) do
       # We're using a hacky way to get the name of our type, since there doesn't
       # seem to be a correct way to introspect this at the time this code is run.
       # We expect that the class in which this code is executed will be something
@@ -1855,7 +1931,8 @@ class Type
           provider
         end
       end
-    end.parenttype = self
+    end
+    param.parenttype = self
   end
 
   # @todo this needs a better explanation
@@ -2055,8 +2132,10 @@ class Type
 
       # Collect the current prereqs
       list.each { |dep|
+        next if dep.nil?
+
         # Support them passing objects directly, to save some effort.
-        unless dep.is_a? Puppet::Type
+        unless dep.is_a?(Puppet::Type)
           # Skip autorelation that we aren't managing
           unless dep = rel_catalog.resource(type, dep)
             next

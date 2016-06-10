@@ -89,12 +89,45 @@ module Puppet::Util::Windows::File
   end
   module_function :symlink
 
+
+  def exist?(path)
+    path = path.to_str if path.respond_to?(:to_str) # support WatchedFile
+    path = path.to_s # support String and Pathname
+
+    seen_paths = []
+    # follow up to 64 symlinks before giving up
+    0.upto(64) do |depth|
+      # return false if this path has been seen before.  This is protection against circular symlinks
+      return false if seen_paths.include?(path.downcase)
+
+      result = get_attributes(path,false)
+
+      # return false for path not found
+      return false if result == INVALID_FILE_ATTRIBUTES
+
+      # return true if path exists and it's not a symlink
+      # Other file attributes are ignored. https://msdn.microsoft.com/en-us/library/windows/desktop/gg258117(v=vs.85).aspx
+      return true if (result & FILE_ATTRIBUTE_REPARSE_POINT) != FILE_ATTRIBUTE_REPARSE_POINT
+
+      # walk the symlink and try again...
+      seen_paths << path.downcase
+      path = readlink(path)
+    end
+
+    false
+  end
+  module_function :exist?
+
+
   INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF #define INVALID_FILE_ATTRIBUTES (DWORD (-1))
 
-  def get_attributes(file_name)
+  def get_attributes(file_name, raise_on_invalid = true)
     result = GetFileAttributesW(wide_string(file_name.to_s))
-    return result unless result == INVALID_FILE_ATTRIBUTES
-    raise Puppet::Util::Windows::Error.new("GetFileAttributes(#{file_name})")
+    if raise_on_invalid && result == INVALID_FILE_ATTRIBUTES
+      raise Puppet::Util::Windows::Error.new("GetFileAttributes(#{file_name})")
+    end
+
+    result
   end
   module_function :get_attributes
 
@@ -179,13 +212,10 @@ module Puppet::Util::Windows::File
 
   FILE_ATTRIBUTE_REPARSE_POINT = 0x400
   def symlink?(file_name)
-    begin
-      attributes = get_attributes(file_name)
-      (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == FILE_ATTRIBUTE_REPARSE_POINT
-    rescue
-      # raised INVALID_FILE_ATTRIBUTES is equivalent to file not found
-      false
-    end
+    attributes = get_attributes(file_name, false)
+
+    return false if (attributes == INVALID_FILE_ATTRIBUTES)
+    (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == FILE_ATTRIBUTE_REPARSE_POINT
   end
   module_function :symlink?
 
@@ -272,7 +302,7 @@ module Puppet::Util::Windows::File
 
   private
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa364571(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa364571(v=vs.85).aspx
   FSCTL_GET_REPARSE_POINT = 0x900a8
 
   def self.resolve_symlink(handle)
@@ -290,7 +320,7 @@ module Puppet::Util::Windows::File
 
   ffi_convention :stdcall
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa365512(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa365512(v=vs.85).aspx
   # BOOL WINAPI ReplaceFile(
   #   _In_        LPCTSTR lpReplacedFileName,
   #   _In_        LPCTSTR lpReplacementFileName,
@@ -305,7 +335,7 @@ module Puppet::Util::Windows::File
   attach_function_private :ReplaceFileW,
     [:lpcwstr, :lpcwstr, :lpcwstr, :dword, :lpvoid, :lpvoid], :win32_bool
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa365240(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa365240(v=vs.85).aspx
   # BOOL WINAPI MoveFileEx(
   #   _In_      LPCTSTR lpExistingFileName,
   #   _In_opt_  LPCTSTR lpNewFileName,
@@ -328,7 +358,7 @@ module Puppet::Util::Windows::File
   rescue LoadError
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa364944(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa364944(v=vs.85).aspx
   # DWORD WINAPI GetFileAttributes(
   #   _In_  LPCTSTR lpFileName
   # );
@@ -336,7 +366,7 @@ module Puppet::Util::Windows::File
   attach_function_private :GetFileAttributesW,
     [:lpcwstr], :dword
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa365535(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa365535(v=vs.85).aspx
   # BOOL WINAPI SetFileAttributes(
   #   _In_  LPCTSTR lpFileName,
   #   _In_  DWORD dwFileAttributes
@@ -358,7 +388,7 @@ module Puppet::Util::Windows::File
   attach_function_private :CreateFileW,
     [:lpcwstr, :dword, :dword, :pointer, :dword, :dword, :handle], :handle
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa363216(v=vs.85).aspx
   # BOOL WINAPI DeviceIoControl(
   #   _In_         HANDLE hDevice,
   #   _In_         DWORD dwIoControlCode,
@@ -376,8 +406,8 @@ module Puppet::Util::Windows::File
   MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16384
 
   # REPARSE_DATA_BUFFER
-  # http://msdn.microsoft.com/en-us/library/cc232006.aspx
-  # http://msdn.microsoft.com/en-us/library/windows/hardware/ff552012(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/cc232006.aspx
+  # https://msdn.microsoft.com/en-us/library/windows/hardware/ff552012(v=vs.85).aspx
   # struct is always MAXIMUM_REPARSE_DATA_BUFFER_SIZE bytes
   class REPARSE_DATA_BUFFER < FFI::Struct
     layout :ReparseTag, :win32_ulong,

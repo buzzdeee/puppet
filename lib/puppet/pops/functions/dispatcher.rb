@@ -28,13 +28,13 @@ class Puppet::Pops::Functions::Dispatcher
   #
   # @api private
   def dispatch(instance, calling_scope, args, &block)
-    tc = Puppet::Pops::Types::TypeCalculator
+    tc = Puppet::Pops::Types::TypeCalculator.singleton
     actual = tc.infer_set(block_given? ? args + [block] : args)
     found = @dispatchers.find { |d| tc.callable?(d.type, actual) }
     if found
       found.invoke(instance, calling_scope, args, &block)
     else
-      raise ArgumentError, "function '#{instance.class.name}' called with mis-matched arguments\n#{Puppet::Pops::Evaluator::CallableMismatchDescriber.diff_string(instance.class.name, actual, @dispatchers)}"
+      raise ArgumentError, Puppet::Pops::Types::TypeMismatchDescriber.describe_signatures(instance.class.name, @dispatchers, actual)
     end
   end
 
@@ -46,7 +46,13 @@ class Puppet::Pops::Functions::Dispatcher
   #
   # @api private
   def add_dispatch(type, method_name, param_names, block_name, injections, weaving, last_captures)
-    @dispatchers << Puppet::Pops::Functions::Dispatch.new(type, method_name, param_names, block_name, injections, weaving, last_captures)
+    add(Puppet::Pops::Functions::Dispatch.new(type, method_name, param_names, block_name, injections, weaving, last_captures))
+  end
+
+  # Adds a dispatch directly to the set of dispatchers.
+  # @api private
+  def add(a_dispatch)
+    @dispatchers << a_dispatch
   end
 
   # Produces a CallableType for a single signature, and a Variant[<callables>] otherwise
@@ -56,7 +62,7 @@ class Puppet::Pops::Functions::Dispatcher
     # make a copy to make sure it can be contained by someone else (even if it is not contained here, it
     # should be treated as immutable).
     #
-    callables = dispatchers.map { | dispatch | dispatch.type.copy }
+    callables = dispatchers.map { | dispatch | dispatch.type }
 
     # multiple signatures, produce a Variant type of Callable1-n (must copy them)
     # single signature, produce single Callable

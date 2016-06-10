@@ -1,5 +1,6 @@
 require 'net/http'
 require 'uri'
+require 'json'
 
 require 'puppet/network/http'
 require 'puppet/network/http_pool'
@@ -43,8 +44,12 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
 
   # Provide appropriate headers.
   def headers
+    # yaml is not allowed on the network
+    network_formats = model.supported_formats.reject do |format|
+      [:yaml, :b64_zlib_yaml].include?(format)
+    end
     common_headers = {
-      "Accept"                                     => model.supported_formats.join(", "),
+      "Accept"                                     => network_formats.join(", "),
       Puppet::Network::HTTP::HEADER_PUPPET_VERSION => Puppet.version
     }
 
@@ -96,7 +101,8 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
       # WEBrick in Ruby 1.9.1 only supports up to 1024 character lines in an HTTP request
       # http://redmine.ruby-lang.org/issues/show/3991
       if "GET #{uri_with_query_string} HTTP/1.1\r\n".length > 1024
-        http_post(req, uri, body, headers)
+        uri_with_env = "#{uri}?environment=#{request.environment.name}"
+        http_post(req, uri_with_env, body, headers)
       else
         http_get(req, uri_with_query_string, headers)
       end
@@ -213,7 +219,20 @@ class Puppet::Indirector::REST < Puppet::Indirector::Terminus
   end
 
   def convert_to_http_error(response)
-    message = "Error #{response.code} on SERVER: #{(response.body||'').empty? ? response.message : uncompress_body(response)}"
+    if response.body.to_s.empty? && response.respond_to?(:message)
+      returned_message = response.message
+    elsif response['content-type'].is_a?(String)
+      content_type, body = parse_response(response)
+      if content_type =~ /[pj]son/
+        returned_message = JSON.parse(body)["message"]
+      else
+        returned_message = uncompress_body(response)
+      end
+    else
+      returned_message = uncompress_body(response)
+    end
+
+    message = "Error #{response.code} on SERVER: #{returned_message}"
     Net::HTTPError.new(message, response)
   end
 

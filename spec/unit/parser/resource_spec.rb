@@ -105,9 +105,9 @@ describe Puppet::Parser::Resource do
       @arguments = {:scope => @scope}
     end
 
-    it "should fail unless #{name.to_s} is specified" do
+    it "should fail unless hash is specified" do
       expect {
-        Puppet::Parser::Resource.new('file', '/my/file')
+        Puppet::Parser::Resource.new('file', '/my/file', nil)
       }.to raise_error(ArgumentError, /Resources require a hash as last argument/)
     end
 
@@ -191,6 +191,13 @@ describe Puppet::Parser::Resource do
       resource.evaluate
 
       expect(@compiler.catalog).to be_edge(foo_stage, resource)
+    end
+
+    it 'should allow a resource reference to be undef' do
+      Puppet[:code] = "notify { 'hello': message=>'yo', notify => undef }"
+      catalog = Puppet::Parser::Compiler.compile(Puppet::Node.new 'anyone')
+      edges = catalog.edges.map {|e| [e.source.ref, e.target.ref]}
+      expect(edges).to include(['Class[main]', 'Notify[hello]'])
     end
 
     it "should allow edges to propagate multiple levels down the scope hierarchy" do
@@ -531,24 +538,6 @@ describe Puppet::Parser::Resource do
     end
   end
 
-  describe "when validating" do
-    it "should check each parameter" do
-      resource = Puppet::Parser::Resource.new :foo, "bar", :scope => @scope, :source => stub("source")
-      resource[:one] = :two
-      resource[:three] = :four
-      resource.expects(:validate_parameter).with(:one)
-      resource.expects(:validate_parameter).with(:three)
-      resource.send(:validate)
-    end
-
-    it "should raise a parse error when there's a failure" do
-      resource = Puppet::Parser::Resource.new :foo, "bar", :scope => @scope, :source => stub("source")
-      resource[:one] = :two
-      resource.expects(:validate_parameter).with(:one).raises ArgumentError
-      expect { resource.send(:validate) }.to raise_error(Puppet::ParseError)
-    end
-  end
-
   describe "when setting parameters" do
     before do
       @source = newclass "foobar"
@@ -574,7 +563,7 @@ describe Puppet::Parser::Resource do
 
   # part of #629 -- the undef keyword.  Make sure 'undef' params get skipped.
   it "should not include 'undef' parameters when converting itself to a hash" do
-    resource = Puppet::Parser::Resource.new "file", "/tmp/testing", :source => mock("source"), :scope => mock("scope")
+    resource = Puppet::Parser::Resource.new "file", "/tmp/testing", :source => mock("source"), :scope => @scope
     resource[:owner] = :undef
     resource[:mode] = "755"
     expect(resource.to_hash[:owner]).to be_nil

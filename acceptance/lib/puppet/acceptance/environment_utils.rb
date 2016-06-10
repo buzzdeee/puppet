@@ -228,7 +228,6 @@ module Puppet
 
         results = {}
         safely_shadow_directory_contents_and_yield(master, master.puppet('master')['codedir'], envdir) do
-
           config_print = options[:config_print]
           directory_environments = options[:directory_environments]
 
@@ -246,31 +245,29 @@ module Puppet
                 agent_results[:puppet_agent] = result
               end
 
-              if agent == master
-                args = ["--trace"]
-                args << ["--environment", environment] if environment
+              args = ["--trace"]
+              args << ["--environment", environment] if environment
 
-                step "print puppet config for #{description} environment"
-                on(agent, puppet(*(["config", "print", "basemodulepath", "modulepath", "manifest", "config_version", config_print] + args)), :acceptable_exit_codes => (0..255)) do
-                  agent_results[:puppet_config] = result
-                end
+              step "print puppet config for #{description} environment"
+              on(master, puppet(*(["config", "print", "basemodulepath", "modulepath", "manifest", "config_version", config_print] + args)), :acceptable_exit_codes => (0..255)) do
+                agent_results[:puppet_config] = result
+              end
 
-                step "puppet apply using #{description} environment"
-                on(agent, puppet(*(["apply", '-e', '"include testing_mod"'] + args)), :acceptable_exit_codes => (0..255)) do
-                  agent_results[:puppet_apply] = result
-                end
+              step "puppet apply using #{description} environment"
+              on(master, puppet(*(["apply", '-e', '"include testing_mod"'] + args)), :acceptable_exit_codes => (0..255)) do
+                agent_results[:puppet_apply] = result
+              end
 
-                # Be aware that Puppet Module Tool will create the module directory path if it
-                # does not exist.  So these tests should be run last...
-                step "install a module into environment"
-                on(agent, puppet(*(["module", "install", "pmtacceptance-nginx"] + args)), :acceptable_exit_codes => (0..255)) do
-                  agent_results[:puppet_module_install] = result
-                end
+              # Be aware that Puppet Module Tool will create the module directory path if it
+              # does not exist.  So these tests should be run last...
+              step "install a module into environment"
+              on(master, puppet(*(["module", "install", "pmtacceptance-nginx"] + args)), :acceptable_exit_codes => (0..255)) do
+                agent_results[:puppet_module_install] = result
+              end
 
-                step "uninstall a module from #{description} environment"
-                on(agent, puppet(*(["module", "uninstall", "pmtacceptance-nginx"] + args)), :acceptable_exit_codes => (0..255)) do
-                  agent_results[:puppet_module_uninstall] = result
-                end
+              step "uninstall a module from #{description} environment"
+              on(master, puppet(*(["module", "uninstall", "pmtacceptance-nginx"] + args)), :acceptable_exit_codes => (0..255)) do
+                agent_results[:puppet_module_uninstall] = result
               end
             end
           end
@@ -360,6 +357,43 @@ module Puppet
         end
         assert failures.empty?, "Failed Review:\n\n#{failures.join("\n")}\n"
       end
+
+      # generate a random string of 6 letters and numbers.  NOT secure
+      def random_string
+        [*('a'..'z'),*('0'..'9')].shuffle[0,8].join
+      end
+      private :random_string
+
+      # if the first test to call this has changed the environmentpath, this will cause trouble
+      #   maybe not the best idea to memoize this?
+      def environmentpath
+        @@memoized_environmentpath ||= master.puppet['environmentpath']
+      end
+
+      # create a tmpdir to hold a temporary environment bound by puppet environment naming restrictions
+      # symbolically link environment into environmentpath
+      def mk_tmp_environment_with_teardown(environment)
+        # add the tmp_environment to a set to ensure no collisions
+        @@tmp_environment_set ||= Set.new
+        deadman = 100; loop_num = 0
+        while @@tmp_environment_set.include?(tmp_environment = environment.downcase + '_' + random_string) do
+          break if (loop_num = loop_num + 1) > deadman
+        end
+        @@tmp_environment_set << tmp_environment
+        tmpdir = File.join('','tmp',tmp_environment)
+        on master, "mkdir -p #{tmpdir}/manifests #{tmpdir}/modules"
+
+        # register teardown to remove the link below
+        teardown do
+          on master, "rm -rf #{File.join(environmentpath,tmp_environment)}"
+        end
+
+        # WARNING: this won't work with filesync (symlinked environments are not supported)
+        on master, "ln -sf #{tmpdir} #{File.join(environmentpath,tmp_environment)}"
+        return tmp_environment
+      end
+      module_function :mk_tmp_environment_with_teardown, :environmentpath
+
     end
   end
 end

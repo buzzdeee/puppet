@@ -120,6 +120,13 @@ describe Puppet::Application::Apply do
       expect { @apply.setup }.to exit_with 1
     end
 
+    it "should use :main, :puppetd, and :ssl" do
+      Puppet.settings.unstub(:use)
+      Puppet.settings.expects(:use).with(:main, :agent, :ssl)
+
+      @apply.setup
+    end
+
     it "should tell the report handler to cache locally as yaml" do
       Puppet::Transaction::Report.indirection.expects(:cache_class=).with(:yaml)
 
@@ -243,6 +250,12 @@ describe Puppet::Application::Apply do
         expect(msg.level).to eq(:warning)
       end
 
+      it "should splay" do
+        @apply.expects(:splay)
+
+        expect { @apply.main }.to exit_with 0
+      end
+
       it "should raise an error if we can't find the node" do
         Puppet::Node.indirection.expects(:find).returns(nil)
 
@@ -346,7 +359,7 @@ describe Puppet::Application::Apply do
         it "should raise an error if we can't find the facts" do
           Puppet::Node::Facts.indirection.expects(:find).returns(nil)
 
-          expect { @apply.main }.to raise_error
+          expect { @apply.main }.to raise_error(RuntimeError, /Could not find facts/)
         end
       end
 
@@ -456,5 +469,22 @@ describe Puppet::Application::Apply do
         with(:catalog => catalog, :pluginsync => false)
       @apply.send(:apply_catalog, catalog)
     end
+  end
+
+  it "should honor the catalog_cache_terminus setting" do
+    Puppet.settings[:catalog_cache_terminus] = "json"
+    Puppet::Resource::Catalog.indirection.expects(:cache_class=).with(:json)
+
+    @apply.initialize_app_defaults
+    @apply.setup
+  end
+
+  it "should set catalog cache class to nil during a noop run" do
+    Puppet[:catalog_cache_terminus] = "json"
+    Puppet[:noop] = true
+    Puppet::Resource::Catalog.indirection.expects(:cache_class=).with(nil)
+
+    @apply.initialize_app_defaults
+    @apply.setup
   end
 end

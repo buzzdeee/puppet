@@ -74,6 +74,12 @@ module Puppet
         value. On packaging systems that manage configuration files separately
         from "normal" system files, you can uninstall config files by
         specifying `purged` as the ensure value. This defaults to `installed`.
+
+        Version numbers must match the full version to install, including
+        release if the provider uses a release moniker. Ranges or semver
+        patterns are not accepted except for the `gem` package provider. For
+        example, to install the bash package from the rpm
+        `bash-4.1.2-29.el6.x86_64.rpm`, use the string `'4.1.2-29.el6'`.
       EOT
 
       attr_accessor :latest
@@ -144,7 +150,7 @@ module Puppet
             return true unless [:absent, :purged, :held].include?(is)
           when :latest
             # Short-circuit packages that are not present
-            return false if is == :absent or is == :purged
+            return false if is == :absent || is == :purged
 
             # Don't run 'latest' more than about every 5 minutes
             if @latest and ((Time.now.to_i - @lateststamp) / 60) < 5
@@ -175,7 +181,7 @@ module Puppet
 
 
           when :absent
-            return true if is == :absent or is == :purged
+            return true if is == :absent || is == :purged
           when :purged
             return true if is == :purged
           # this handles version number matches and
@@ -205,6 +211,17 @@ module Puppet
           super(newvalue)
         end
       end
+
+      def change_to_s(currentvalue, newvalue)
+        # Handle transitioning from any previous state to 'purged'
+        return 'purged' if newvalue == :purged
+
+        # Check for transitions from nil/purged/absent to 'created' (any state that is not absent and not purged)
+        return 'created' if (currentvalue.nil? || currentvalue == :absent || currentvalue == :purged) && (newvalue != :absent && newvalue != :purged)
+
+        # The base should handle the normal property transitions
+        super(currentvalue, newvalue)
+      end
     end
 
     newparam(:name) do
@@ -221,8 +238,8 @@ module Puppet
           }
 
           package { 'openssl':
+            ensure => installed,
             name   => $ssl,
-            ensure => installed
           }
 
           . etc. .
@@ -233,9 +250,9 @@ module Puppet
           }
 
           package { 'openssh':
-            name    => $ssh
             ensure  => installed,
-            require => Package['openssl']
+            name    => $ssh,
+            require => Package['openssl'],
           }
 
       "
@@ -393,8 +410,9 @@ module Puppet
     end
 
     newparam(:configfiles) do
-      desc "Whether configfiles should be kept or replaced.  Most packages
-        types do not support this parameter. Defaults to `keep`."
+      desc "Whether to keep or replace modified config files when installing or
+        upgrading a package. This only affects the `apt` and `dpkg` providers.
+        Defaults to `keep`."
 
       defaultto :keep
 
@@ -445,10 +463,12 @@ module Puppet
         key and value pair are interpreted in a provider specific way.  Each
         option will automatically be quoted when passed to the install command.
 
-        On Windows, this is the **only** place in Puppet where backslash
-        separators should be used.  Note that backslashes in double-quoted
-        strings _must_ be double-escaped and backslashes in single-quoted
-        strings _may_ be double-escaped.
+        With Windows packages, note that file paths in an install option must
+        use backslashes. (Since install options are passed directly to the
+        installation command, forward slashes won't be automatically converted
+        like they are in `file` resources.) Note also that backslashes in
+        double-quoted strings _must_ be escaped and backslashes in single-quoted
+        strings _can_ be escaped.
       EOT
     end
 

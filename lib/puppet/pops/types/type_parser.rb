@@ -1,18 +1,17 @@
 # This class provides parsing of Type Specification from a string into the Type
-# Model that is produced by the Puppet::Pops::Types::TypeFactory.
+# Model that is produced by the TypeFactory.
 #
 # The Type Specifications that are parsed are the same as the stringified forms
-# of types produced by the {Puppet::Pops::Types::TypeCalculator TypeCalculator}.
+# of types produced by the {TypeCalculator TypeCalculator}.
 #
 # @api public
-class Puppet::Pops::Types::TypeParser
-  # @api private
-  TYPES = Puppet::Pops::Types::TypeFactory
-
+module Puppet::Pops
+module Types
+class TypeParser
   # @api public
   def initialize
-    @parser = Puppet::Pops::Parser::Parser.new()
-    @type_transformer = Puppet::Pops::Visitor.new(nil, "interpret", 0, 0)
+    @parser = Parser::Parser.new
+    @type_transformer = Visitor.new(nil, 'interpret', 1, 1)
   end
 
   # Produces a *puppet type* based on the given string.
@@ -23,433 +22,494 @@ class Puppet::Pops::Types::TypeParser
   #     parser.parse('Hash[Integer, Array[String]]')
   #
   # @param string [String] a string with the type expressed in stringified form as produced by the 
-  #   {Puppet::Pops::Types::TypeCalculator#string TypeCalculator#string} method.
-  # @return [Puppet::Pops::Types::PAnyType] a specialization of the PAnyType representing the type.
+  #   types {"#to_s} method.
+  # @param context [Puppet::Parser::Scope,Loader::Loader] scope or loader to use when loading type aliases
+  # @return [PAnyType] a specialization of the PAnyType representing the type.
   #
   # @api public
   #
-  def parse(string)
-    # TODO: This state (@string) can be removed since the parse result of newer future parser
-    # contains a Locator in its SourcePosAdapter and the Locator keeps the string.
-    # This way, there is no difference between a parsed "string" and something that has been parsed
-    # earlier and fed to 'interpret'
-    #
-    @string = string
-    model = @parser.parse_string(@string)
-    if model
-      interpret(model.current)
-    else
-      raise_invalid_type_specification_error
-    end
+  def parse(string, context = nil)
+    model = @parser.parse_string(string)
+    interpret(model.current.body, context)
   end
 
-  # @api private
-  def interpret(ast)
-    result = @type_transformer.visit_this_0(self, ast)
-    result = result.body if result.is_a?(Puppet::Pops::Model::Program)
-    raise_invalid_type_specification_error unless result.is_a?(Puppet::Pops::Types::PAnyType)
+  # @param ast [Puppet::Pops::Model::PopsObject] the ast to interpret
+  # @param context [Puppet::Parser::Scope,Loader::Loader, nil] scope or loader to use when loading type aliases
+  # @return [PAnyType] a specialization of the PAnyType representing the type.
+  #
+  # @api public
+  def interpret(ast, context)
+    result = @type_transformer.visit_this_1(self, ast, context)
+    raise_invalid_type_specification_error(ast) unless result.is_a?(PAnyType)
     result
   end
 
   # @api private
-  def interpret_any(ast)
-    @type_transformer.visit_this_0(self, ast)
+  def interpret_any(ast, context)
+    @type_transformer.visit_this_1(self, ast, context)
   end
 
   # @api private
-  def interpret_Object(o)
-    raise_invalid_type_specification_error
+  def interpret_Object(o, context)
+    raise_invalid_type_specification_error(o)
   end
 
   # @api private
-  def interpret_Program(o)
-    interpret(o.body)
+  def interpret_Program(o, context)
+    interpret_any(o.body, context)
   end
 
-  # @api private
-  def interpret_QualifiedName(o)
-    o.value
-  end
-
-  # @api private
-  def interpret_LiteralString(o)
-    o.value
-  end
-
-  def interpret_LiteralRegularExpression(o)
-    o.value
-  end
-
-  # @api private
-  def interpret_String(o)
+  def interpret_LambdaExpression(o, context)
     o
   end
 
   # @api private
-  def interpret_LiteralDefault(o)
+  def interpret_QualifiedName(o, context)
+    o.value
+  end
+
+  # @api private
+  def interpret_LiteralBoolean(o, context)
+    o.value
+  end
+
+  # @api private
+  def interpret_LiteralDefault(o, context)
     :default
   end
 
   # @api private
-  def interpret_LiteralInteger(o)
+  def interpret_LiteralFloat(o, context)
     o.value
   end
 
   # @api private
-  def interpret_LiteralFloat(o)
-    o.value
-  end
-
-  # @api private
-  def interpret_LiteralHash(o)
+  def interpret_LiteralHash(o, context)
     result = {}
     o.entries.each do |entry|
-      result[@type_transformer.visit_this_0(self, entry.key)] = @type_transformer.visit_this_0(self, entry.value)
+      result[@type_transformer.visit_this_1(self, entry.key, context)] = @type_transformer.visit_this_1(self, entry.value, context)
     end
     result
   end
 
   # @api private
-  def interpret_QualifiedReference(name_ast)
-    case name_ast.value
-    when "integer"
-      TYPES.integer
+  def interpret_LiteralInteger(o, context)
+    o.value
+  end
 
-    when "float"
-      TYPES.float
+  # @api private
+  def interpret_LiteralList(o, context)
+    o.values.map { |value| @type_transformer.visit_this_1(self, value, context) }
+  end
 
-    when "numeric"
-        TYPES.numeric
+  # @api private
+  def interpret_LiteralRegularExpression(o, context)
+    o.value
+  end
 
-    when "string"
-      TYPES.string
+  # @api private
+  def interpret_LiteralString(o, context)
+    o.value
+  end
 
-    when "enum"
-      TYPES.enum
+  # @api private
+  def interpret_LiteralUndef(o, context)
+    nil
+  end
 
-    when "boolean"
-      TYPES.boolean
+  # @api private
+  def interpret_String(o, context)
+    o
+  end
 
-    when "pattern"
-      TYPES.pattern
+  # @api private
+  def interpret_UnaryMinusExpression(o, context)
+    -@type_transformer.visit_this_1(self, o.expr, context)
+  end
 
-    when "regexp"
-      TYPES.regexp
-
-    when "data"
-      TYPES.data
-
-    when "array"
-      TYPES.array_of_data
-
-    when "hash"
-      TYPES.hash_of_data
-
-    when "class"
-      TYPES.host_class()
-
-    when "resource"
-      TYPES.resource()
-
-    when "collection"
-      TYPES.collection()
-
-    when "scalar"
-      TYPES.scalar()
-
-    when "catalogentry"
-      TYPES.catalog_entry()
-
-    when "undef"
-      TYPES.undef()
-
-    when "default"
-      TYPES.default()
-
-    when "any"
-      TYPES.any()
-
-    when "variant"
-      TYPES.variant()
-
-    when "optional"
-      TYPES.optional()
-
-    when "runtime"
-      TYPES.runtime()
-
-    when "type"
-      TYPES.type_type()
-
-    when "tuple"
-      TYPES.tuple()
-
-    when "struct"
-      TYPES.struct()
-
-    when "callable"
+  # @api private
+  def self.type_map
+    @type_map ||= {
+       'integer'       => TypeFactory.integer,
+       'float'         => TypeFactory.float,
+        'numeric'      => TypeFactory.numeric,
+        'iterable'     => TypeFactory.iterable,
+        'iterator'     => TypeFactory.iterator,
+        'string'       => TypeFactory.string,
+        'enum'         => TypeFactory.enum,
+        'boolean'      => TypeFactory.boolean,
+        'pattern'      => TypeFactory.pattern,
+        'regexp'       => TypeFactory.regexp,
+        'data'         => TypeFactory.data,
+        'array'        => TypeFactory.array_of_data,
+        'hash'         => TypeFactory.hash_of_data,
+        'class'        => TypeFactory.host_class,
+        'resource'     => TypeFactory.resource,
+        'collection'   => TypeFactory.collection,
+        'scalar'       => TypeFactory.scalar,
+        'catalogentry' => TypeFactory.catalog_entry,
+        'undef'        => TypeFactory.undef,
+        'notundef'     => TypeFactory.not_undef(),
+        'default'      => TypeFactory.default(),
+        'any'          => TypeFactory.any,
+        'variant'      => TypeFactory.variant,
+        'optional'     => TypeFactory.optional,
+        'runtime'      => TypeFactory.runtime,
+        'type'         => TypeFactory.type_type,
+        'tuple'        => TypeFactory.tuple,
+        'struct'       => TypeFactory.struct,
+        'object'       => TypeFactory.object,
+        'typealias'    => TypeFactory.type_alias,
+        'typereference' => TypeFactory.type_reference,
+        'typeset'      => TypeFactory.type_set,
       # A generic callable as opposed to one that does not accept arguments
-      TYPES.all_callables()
+        'callable'     => TypeFactory.all_callables,
+        'semver'       => TypeFactory.sem_ver,
+        'semverrange'  => TypeFactory.sem_ver_range
+    }
+  end
 
+  # @api private
+  def interpret_QualifiedReference(name_ast, context)
+    name = name_ast.value
+    if found = self.class.type_map[name]
+      found
     else
-      TYPES.resource(name_ast.value)
+      loader = loader_from_context(name_ast, context)
+      unless loader.nil?
+        type = loader.load(:type, name)
+        type = type.resolve(self, loader) unless type.nil?
+      end
+      type || TypeFactory.type_reference(name_ast.cased_value)
     end
   end
 
   # @api private
-  def interpret_AccessExpression(parameterized_ast)
-    parameters = parameterized_ast.keys.collect { |param| interpret_any(param) }
-
-    unless parameterized_ast.left_expr.is_a?(Puppet::Pops::Model::QualifiedReference)
-      raise_invalid_type_specification_error
+  def loader_from_context(ast, context)
+    if context.nil?
+      nil
+    elsif context.is_a?(Puppet::Pops::Loader::Loader)
+      context
+    else
+      Puppet::Pops::Adapters::LoaderAdapter.loader_for_model_object(ast, context)
     end
+  end
 
-    case parameterized_ast.left_expr.value
-    when "array"
+  # @api private
+  def interpret_AccessExpression(ast, context)
+    parameters = ast.keys.collect { |param| interpret_any(param, context) }
+
+    qref = ast.left_expr
+    raise_invalid_type_specification_error(ast) unless qref.is_a?(Model::QualifiedReference)
+
+    type_name = qref.value
+    case type_name
+    when 'array'
       case parameters.size
       when 1
+        type = assert_type(ast, parameters[0])
       when 2
-        size_type =
-        if parameters[1].is_a?(Puppet::Pops::Types::PIntegerType)
-          parameters[1].copy
+        if parameters[0].is_a?(PAnyType)
+          type = parameters[0]
+          size_type =
+            if parameters[1].is_a?(PIntegerType)
+              size_type = parameters[1]
+            else
+              assert_range_parameter(ast, parameters[1])
+              TypeFactory.range(parameters[1], :default)
+            end
         else
-          assert_range_parameter(parameters[1])
-          TYPES.range(parameters[1], :default)
+          type = :default
+          assert_range_parameter(ast, parameters[0])
+          assert_range_parameter(ast, parameters[1])
+          size_type = TypeFactory.range(parameters[0], parameters[1])
         end
       when 3
-        assert_range_parameter(parameters[1])
-        assert_range_parameter(parameters[2])
-        size_type = TYPES.range(parameters[1], parameters[2])
+        type = assert_type(ast, parameters[0])
+        assert_range_parameter(ast, parameters[1])
+        assert_range_parameter(ast, parameters[2])
+        size_type = TypeFactory.range(parameters[1], parameters[2])
       else
-        raise_invalid_parameters_error("Array", "1 to 3", parameters.size)
+        raise_invalid_parameters_error('Array', '1 to 3', parameters.size)
       end
-      assert_type(parameters[0])
-      t = TYPES.array_of(parameters[0])
-      t.size_type = size_type if size_type
-      t
+      TypeFactory.array_of(type, size_type)
 
-    when "hash"
-      result = case parameters.size
+    when 'hash'
+      case parameters.size
       when 2
-        assert_type(parameters[0])
-        assert_type(parameters[1])
-        TYPES.hash_of(parameters[1], parameters[0])
+        if parameters[0].is_a?(PAnyType) && parameters[1].is_a?(PAnyType)
+          TypeFactory.hash_of(parameters[1], parameters[0])
+        else
+          assert_range_parameter(ast, parameters[0])
+          assert_range_parameter(ast, parameters[1])
+          TypeFactory.hash_of(:default, :default, TypeFactory.range(parameters[0], parameters[1]))
+        end
       when 3
         size_type =
-        if parameters[2].is_a?(Puppet::Pops::Types::PIntegerType)
-          parameters[2].copy
-        else
-          assert_range_parameter(parameters[2])
-          TYPES.range(parameters[2], :default)
-        end
-        assert_type(parameters[0])
-        assert_type(parameters[1])
-        TYPES.hash_of(parameters[1], parameters[0])
+          if parameters[2].is_a?(PIntegerType)
+            parameters[2]
+          else
+            assert_range_parameter(ast, parameters[2])
+            TypeFactory.range(parameters[2], :default)
+          end
+        assert_type(ast, parameters[0])
+        assert_type(ast, parameters[1])
+        TypeFactory.hash_of(parameters[1], parameters[0], size_type)
       when 4
-        assert_range_parameter(parameters[2])
-        assert_range_parameter(parameters[3])
-        size_type = TYPES.range(parameters[2], parameters[3])
-        assert_type(parameters[0])
-        assert_type(parameters[1])
-        TYPES.hash_of(parameters[1], parameters[0])
+        assert_range_parameter(ast, parameters[2])
+        assert_range_parameter(ast, parameters[3])
+        assert_type(ast, parameters[0])
+        assert_type(ast, parameters[1])
+        TypeFactory.hash_of(parameters[1], parameters[0], TypeFactory.range(parameters[2], parameters[3]))
       else
-        raise_invalid_parameters_error("Hash", "2 to 4", parameters.size)
+        raise_invalid_parameters_error('Hash', '2 to 4', parameters.size)
       end
-      result.size_type = size_type if size_type
-      result
 
-    when "collection"
+    when 'collection'
       size_type = case parameters.size
-      when 1
-        if parameters[0].is_a?(Puppet::Pops::Types::PIntegerType)
-          parameters[0].copy
+        when 1
+          if parameters[0].is_a?(PIntegerType)
+            parameters[0]
+          else
+            assert_range_parameter(ast, parameters[0])
+            TypeFactory.range(parameters[0], :default)
+          end
+        when 2
+          assert_range_parameter(ast, parameters[0])
+          assert_range_parameter(ast, parameters[1])
+          TypeFactory.range(parameters[0], parameters[1])
         else
-          assert_range_parameter(parameters[0])
-          TYPES.range(parameters[0], :default)
+          raise_invalid_parameters_error('Collection', '1 to 2', parameters.size)
         end
-      when 2
-        assert_range_parameter(parameters[0])
-        assert_range_parameter(parameters[1])
-        TYPES.range(parameters[0], parameters[1])
-      else
-        raise_invalid_parameters_error("Collection", "1 to 2", parameters.size)
-      end
-      result = TYPES.collection
-      result.size_type = size_type
-      result
+      TypeFactory.collection(size_type)
 
-    when "class"
+    when 'class'
       if parameters.size != 1
-        raise_invalid_parameters_error("Class", 1, parameters.size)
+        raise_invalid_parameters_error('Class', 1, parameters.size)
       end
-      TYPES.host_class(parameters[0])
+      TypeFactory.host_class(parameters[0])
 
-    when "resource"
-      if parameters.size == 1
-        TYPES.resource(parameters[0])
-      elsif parameters.size != 2
-        raise_invalid_parameters_error("Resource", "1 or 2", parameters.size)
-      else
-        TYPES.resource(parameters[0], parameters[1])
+    when 'resource'
+      type = parameters[0]
+      if type.is_a?(PTypeReferenceType)
+        type_str = type.type_string
+        param_start = type_str.index('[')
+        if param_start.nil?
+          type = type_str
+        else
+          tps = interpret_any(@parser.parse_string(type_str[param_start..-1]).current, context)
+          raise_invalid_parameters_error(type.to_s, '1', tps.size) unless tps.size == 1
+          type = type_str[0..param_start-1]
+          parameters = [type] + tps
+        end
       end
+      create_resource(type, parameters)
 
-    when "regexp"
+    when 'regexp'
       # 1 parameter being a string, or regular expression
-      raise_invalid_parameters_error("Regexp", "1", parameters.size) unless parameters.size == 1
-      TYPES.regexp(parameters[0])
+      raise_invalid_parameters_error('Regexp', '1', parameters.size) unless parameters.size == 1
+      TypeFactory.regexp(parameters[0])
 
-    when "enum"
+    when 'enum'
       # 1..m parameters being strings
-      raise_invalid_parameters_error("Enum", "1 or more", parameters.size) unless parameters.size >= 1
-      TYPES.enum(*parameters)
+      raise_invalid_parameters_error('Enum', '1 or more', parameters.size) unless parameters.size >= 1
+      TypeFactory.enum(*parameters)
 
-    when "pattern"
+    when 'pattern'
       # 1..m parameters being strings or regular expressions
-      raise_invalid_parameters_error("Pattern", "1 or more", parameters.size) unless parameters.size >= 1
-      TYPES.pattern(*parameters)
+      raise_invalid_parameters_error('Pattern', '1 or more', parameters.size) unless parameters.size >= 1
+      TypeFactory.pattern(*parameters)
 
-    when "variant"
+    when 'variant'
       # 1..m parameters being strings or regular expressions
-      raise_invalid_parameters_error("Variant", "1 or more", parameters.size) unless parameters.size >= 1
-      TYPES.variant(*parameters)
+      raise_invalid_parameters_error('Variant', '1 or more', parameters.size) unless parameters.size >= 1
+      TypeFactory.variant(*parameters)
 
-    when "tuple"
+    when 'tuple'
       # 1..m parameters being types (last two optionally integer or literal default
-      raise_invalid_parameters_error("Tuple", "1 or more", parameters.size) unless parameters.size >= 1
+      raise_invalid_parameters_error('Tuple', '1 or more', parameters.size) unless parameters.size >= 1
       length = parameters.size
-      if TYPES.is_range_parameter?(parameters[-2])
+      size_type = nil
+      if TypeFactory.is_range_parameter?(parameters[-2])
         # min, max specification
         min = parameters[-2]
         min = (min == :default || min == 'default') ? 0 : min
-        assert_range_parameter(parameters[-1])
+        assert_range_parameter(ast, parameters[-1])
         max = parameters[-1]
         max = max == :default ? nil : max
         parameters = parameters[0, length-2]
-      elsif TYPES.is_range_parameter?(parameters[-1])
+        size_type = TypeFactory.range(min, max)
+      elsif TypeFactory.is_range_parameter?(parameters[-1])
         min = parameters[-1]
         min = (min == :default || min == 'default') ? 0 : min
         max = nil
         parameters = parameters[0, length-1]
+        size_type = TypeFactory.range(min, max)
       end
-      t = TYPES.tuple(*parameters)
-      if min || max
-        TYPES.constrain_size(t, min, max)
-      end
-      t
+      TypeFactory.tuple(parameters, size_type)
 
-    when "callable"
+    when 'callable'
       # 1..m parameters being types (last three optionally integer or literal default, and a callable)
-      TYPES.callable(*parameters)
+      TypeFactory.callable(*parameters)
 
-    when "struct"
+    when 'struct'
       # 1..m parameters being types (last two optionally integer or literal default
-      raise_invalid_parameters_error("Struct", "1", parameters.size) unless parameters.size == 1
-      assert_struct_parameter(parameters[0])
-      TYPES.struct(parameters[0])
+      raise_invalid_parameters_error('Struct', '1', parameters.size) unless parameters.size == 1
+      h = parameters[0]
+      raise_invalid_type_specification_error(ast) unless h.is_a?(Hash)
+      TypeFactory.struct(h)
 
-    when "integer"
+    when 'integer'
       if parameters.size == 1
         case parameters[0]
         when Integer
-          TYPES.range(parameters[0], parameters[0])
+          TypeFactory.range(parameters[0], :default)
         when :default
-          TYPES.integer # unbound
+          TypeFactory.integer # unbound
         end
       elsif parameters.size != 2
-        raise_invalid_parameters_error("Integer", "1 or 2", parameters.size)
+        raise_invalid_parameters_error('Integer', '1 or 2', parameters.size)
      else
-       TYPES.range(parameters[0] == :default ? nil : parameters[0], parameters[1] == :default ? nil : parameters[1])
+       TypeFactory.range(parameters[0] == :default ? nil : parameters[0], parameters[1] == :default ? nil : parameters[1])
      end
 
-    when "float"
+    when 'object'
+      raise_invalid_parameters_error('Object', 1, parameters.size) unless parameters.size == 1
+      TypeFactory.object(parameters[0])
+
+    when 'typeset'
+      raise_invalid_parameters_error('Object', 1, parameters.size) unless parameters.size == 1
+      TypeFactory.type_set(parameters[0])
+
+    when 'iterable'
+      if parameters.size != 1
+        raise_invalid_parameters_error('Iterable', 1, parameters.size)
+      end
+      assert_type(ast, parameters[0])
+      TypeFactory.iterable(parameters[0])
+
+    when 'iterator'
+      if parameters.size != 1
+        raise_invalid_parameters_error('Iterator', 1, parameters.size)
+      end
+      assert_type(ast, parameters[0])
+      TypeFactory.iterator(parameters[0])
+
+    when 'float'
       if parameters.size == 1
         case parameters[0]
         when Integer, Float
-          TYPES.float_range(parameters[0], parameters[0])
+          TypeFactory.float_range(parameters[0], :default)
         when :default
-          TYPES.float # unbound
+          TypeFactory.float # unbound
         end
       elsif parameters.size != 2
-        raise_invalid_parameters_error("Float", "1 or 2", parameters.size)
+        raise_invalid_parameters_error('Float', '1 or 2', parameters.size)
      else
-       TYPES.float_range(parameters[0] == :default ? nil : parameters[0], parameters[1] == :default ? nil : parameters[1])
+       TypeFactory.float_range(parameters[0] == :default ? nil : parameters[0], parameters[1] == :default ? nil : parameters[1])
      end
 
-    when "string"
+    when 'string'
       size_type =
       case parameters.size
       when 1
-        if parameters[0].is_a?(Puppet::Pops::Types::PIntegerType)
-          parameters[0].copy
+        if parameters[0].is_a?(PIntegerType)
+          parameters[0]
         else
-          assert_range_parameter(parameters[0])
-          TYPES.range(parameters[0], :default)
+          assert_range_parameter(ast, parameters[0])
+          TypeFactory.range(parameters[0], :default)
         end
       when 2
-        assert_range_parameter(parameters[0])
-        assert_range_parameter(parameters[1])
-        TYPES.range(parameters[0], parameters[1])
+        assert_range_parameter(ast, parameters[0])
+        assert_range_parameter(ast, parameters[1])
+        TypeFactory.range(parameters[0], parameters[1])
       else
-        raise_invalid_parameters_error("String", "1 to 2", parameters.size)
+        raise_invalid_parameters_error('String', '1 to 2', parameters.size)
       end
-      result = TYPES.string
-      result.size_type = size_type
-      result
+      TypeFactory.string(size_type)
 
-    when "optional"
+    when 'optional'
       if parameters.size != 1
-        raise_invalid_parameters_error("Optional", 1, parameters.size)
+        raise_invalid_parameters_error('Optional', 1, parameters.size)
       end
-      assert_type(parameters[0])
-      TYPES.optional(parameters[0])
+      param = parameters[0]
+      assert_type(ast, param) unless param.is_a?(String)
+      TypeFactory.optional(param)
 
-    when "any", "data", "catalogentry", "boolean", "scalar", "undef", "numeric", "default"
-      raise_unparameterized_type_error(parameterized_ast.left_expr)
+    when 'any', 'data', 'catalogentry', 'boolean', 'scalar', 'undef', 'numeric', 'default', 'semverrange'
+      raise_unparameterized_type_error(qref)
 
-    when "type"
+    when 'notundef'
+      case parameters.size
+      when 0
+        TypeFactory.not_undef
+      when 1
+        param = parameters[0]
+        assert_type(ast, param) unless param.is_a?(String)
+        TypeFactory.not_undef(param)
+      else
+        raise_invalid_parameters_error("NotUndef", "0 to 1", parameters.size)
+      end
+
+    when 'type'
       if parameters.size != 1
-        raise_invalid_parameters_error("Type", 1, parameters.size)
+        raise_invalid_parameters_error('Type', 1, parameters.size)
       end
-      assert_type(parameters[0])
-      TYPES.type_type(parameters[0])
+      assert_type(ast, parameters[0])
+      TypeFactory.type_type(parameters[0])
 
-    when "runtime"
-      raise_invalid_parameters_error("Runtime", "2", parameters.size) unless parameters.size == 2
-      TYPES.runtime(*parameters)
+    when 'runtime'
+      raise_invalid_parameters_error('Runtime', '2', parameters.size) unless parameters.size == 2
+      TypeFactory.runtime(*parameters)
+
+    when 'semver'
+      raise_invalid_parameters_error('SemVer', '1 or more', parameters.size) unless parameters.size >= 1
+      TypeFactory.sem_ver(*parameters)
 
     else
-      # It is a resource such a File['/tmp/foo']
-      type_name = parameterized_ast.left_expr.value
-      if parameters.size != 1
-        raise_invalid_parameters_error(type_name.capitalize, 1, parameters.size)
+      loader = loader_from_context(qref, context)
+      type = nil
+      unless loader.nil?
+        type = loader.load(:type, type_name)
+        type = type.resolve(self, loader) unless type.nil?
       end
-      TYPES.resource(type_name, parameters[0])
+
+      if type.nil?
+        TypeFactory.type_reference(original_text_of(qref.eContainer))
+      elsif type.is_a?(PResourceType)
+        raise_invalid_parameters_error(qref.cased_value, 1, parameters.size) unless parameters.size == 1
+        TypeFactory.resource(type.type_name, parameters[0])
+      else
+        # Must be a type alias. They can't use parameters (yet)
+        raise_unparameterized_type_error(qref)
+      end
     end
   end
 
   private
 
-  def assert_type(t)
-    raise_invalid_type_specification_error unless t.is_a?(Puppet::Pops::Types::PAnyType)
-    true
-  end
-
-  def assert_range_parameter(t)
-    raise_invalid_type_specification_error unless TYPES.is_range_parameter?(t)
-  end
-
-  def assert_struct_parameter(h)
-    raise_invalid_type_specification_error unless h.is_a?(Hash)
-    h.each do |k,v|
-      # TODO: Should have stricter name rule
-      raise_invalid_type_specification_error unless k.is_a?(String) && !k.empty?
-      assert_type(v)
+  def create_resource(name, parameters)
+    if parameters.size == 1
+      TypeFactory.resource(name)
+    elsif parameters.size == 2
+      TypeFactory.resource(name, parameters[1])
+    else
+      raise_invalid_parameters_error('Resource', '1 or 2', parameters.size)
     end
   end
 
-  def raise_invalid_type_specification_error
+  def assert_type(ast, t)
+    raise_invalid_type_specification_error(ast) unless t.is_a?(PAnyType)
+    t
+  end
+
+  def assert_range_parameter(ast, t)
+    raise_invalid_type_specification_error(ast) unless TypeFactory.is_range_parameter?(t)
+  end
+
+  def raise_invalid_type_specification_error(ast)
     raise Puppet::ParseError,
-      "The expression <#{@string}> is not a valid type specification."
+      "The expression <#{original_text_of(ast)}> is not a valid type specification."
   end
 
   def raise_invalid_parameters_error(type, required, given)
@@ -466,7 +526,9 @@ class Puppet::Pops::Types::TypeParser
   end
 
   def original_text_of(ast)
-    position = Puppet::Pops::Adapters::SourcePosAdapter.adapt(ast)
-    position.extract_text()
+    position = Adapters::SourcePosAdapter.adapt(ast)
+    position.extract_tree_text
   end
+end
+end
 end

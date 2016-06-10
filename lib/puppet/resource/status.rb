@@ -12,9 +12,9 @@ module Puppet
     #
     # @api private
     class Status
+      include Puppet::Util::PsychSupport
       include Puppet::Util::Tagging
       include Puppet::Network::FormatSupport
-      include Puppet::Util::PsychSupport
 
       # @!attribute [rw] file
       #   @return [String] The file where `@real_resource` was defined.
@@ -82,6 +82,15 @@ module Puppet
       #   @return [Array<Puppet::Transaction::Event>] A list of events generated
       #     while evaluating `@real_resource`.
       attr_reader :events
+
+      # @!attribute [rw] failed_dependencies
+      #   @return [Array<Puppet::Resource>] A cache of all
+      #   dependencies of this resource that failed to apply.
+      attr_accessor :failed_dependencies
+
+      def dependency_failed?
+        failed_dependencies && !failed_dependencies.empty?
+      end
 
       # A list of instance variables that should be serialized with this object
       # when converted to YAML.
@@ -174,7 +183,14 @@ module Puppet
         @failed = data['failed']
 
         @events = data['events'].map do |event|
-          Puppet::Transaction::Event.from_data_hash(event)
+          # in YAML (for reports) we serialize this as an object, but
+          # in PSON it becomes a hash. Depending on where we came from
+          # we might not need to deserialize it.
+          if event.class == Puppet::Transaction::Event
+            event
+          else
+            Puppet::Transaction::Event.from_data_hash(event)
+          end
         end
       end
 
@@ -187,7 +203,7 @@ module Puppet
           'resource_type' => @resource_type,
           'containment_path' => @containment_path,
           'evaluation_time' => @evaluation_time,
-          'tags' => @tags,
+          'tags' => @tags.to_a,
           'time' => @time.iso8601(9),
           'failed' => @failed,
           'changed' => @changed,

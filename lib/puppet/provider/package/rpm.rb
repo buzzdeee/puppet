@@ -22,6 +22,31 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
   self::NEVRA_REGEX  = %r{^(\S+) (\S+) (\S+) (\S+) (\S+)$}
   self::NEVRA_FIELDS = [:name, :epoch, :version, :release, :arch]
 
+  ARCH_LIST = [
+    'noarch',
+    'i386',
+    'i686',
+    'ppc',
+    'ppc64',
+    'armv3l',
+    'armv4b',
+    'armv4l',
+    'armv4tl',
+    'armv5tel',
+    'armv5tejl',
+    'armv6l',
+    'armv7l',
+    'm68kmint',
+    's390',
+    's390x',
+    'ia64',
+    'x86_64',
+    'sh3',
+    'sh4',
+  ]
+
+  ARCH_REGEX = Regexp.new(ARCH_LIST.join('|\.'))
+
   commands :rpm => "rpm"
 
   if command('rpm')
@@ -115,15 +140,14 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
     unless source = @resource[:source]
       @resource.fail "RPMs must specify a package source"
     end
-    # RPM gets pissy if you try to install an already
-    # installed package
-    if @resource.should(:ensure) == @property_hash[:ensure] or
-      @resource.should(:ensure) == :latest && @property_hash[:ensure] == latest
-      return
-    end
+
+    version =  @property_hash[:ensure]
+
+    # RPM gets upset if you try to install an already installed package
+    return if @resource.should(:ensure) == version || (@resource.should(:ensure) == :latest && version == latest)
 
     flag = ["-i"]
-    flag = ["-U", "--oldpackage"] if @property_hash[:ensure] and @property_hash[:ensure] != :absent
+    flag = ["-U", "--oldpackage"] if version && (version != :absent && version != :purged)
     flag += install_options if resource[:install_options]
     rpm flag, source
   end
@@ -184,14 +208,9 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
     return 0 if str1 == str2
 
     front_strip_re = /^[^A-Za-z0-9~]+/
-    segment_re = /^[A-Za-z0-9]/
-    # these represent RPM rpmio/rpmstring.c functions
-    risalnum = /[A-Za-z0-9]/
-    risdigit = /^[0-9]+/
-    risalpha = /[A-Za-z]/
 
     while str1.length > 0 or str2.length > 0
-      # trim anything that's !risalnum() and != '~' off the beginning of each string
+      # trim anything that's in front_strip_re and != '~' off the beginning of each string
       str1 = str1.gsub(front_strip_re, '')
       str2 = str2.gsub(front_strip_re, '')
 
@@ -211,7 +230,7 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
       # "grab first completely alpha or completely numeric segment"
       isnum = false
       # if the first char of str1 is a digit, grab the chunk of continuous digits from each string
-      if risdigit.match(str1)
+      if /^[0-9]+/.match(str1)
         if str1 =~ /^[0-9]+/
           segment1 = $~.to_s
           str1 = $~.post_match
@@ -274,6 +293,92 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
     end
   end
 
+  def insync?(is)
+    return false if [:purged, :absent].include?(is)
+    should = resource[:ensure]
+    0 == rpm_compareEVR(rpm_parse_evr(should), rpm_parse_evr(is))
+  end
+
+  # parse a rpm "version" specification
+  # this re-implements rpm's
+  # rpmUtils.miscutils.stringToVersion() in ruby
+  def rpm_parse_evr(s)
+    ei = s.index(':')
+    if ei
+      e = s[0,ei]
+      s = s[ei+1,s.length]
+    else
+      e = nil
+    end
+    begin
+      e = String(Integer(e))
+    rescue
+      # If there are non-digits in the epoch field, default to nil
+      e = nil
+    end
+    ri = s.index('-')
+    if ri
+      v = s[0,ri]
+      r = s[ri+1,s.length]
+      if arch = r.scan(ARCH_REGEX)[0]
+        a = arch.gsub(/\./, '')
+	r.gsub!(ARCH_REGEX, '')
+      end
+    else
+      v = s
+      r = nil
+    end
+    return { :epoch => e, :version => v, :release => r, :arch => a }
+  end
+
+  # how rpm compares two package versions:
+  # rpmUtils.miscutils.compareEVR(), which massages data types and then calls
+  # rpm.labelCompare(), found in rpm.git/python/header-py.c, which
+  # sets epoch to 0 if null, then compares epoch, then ver, then rel
+  # using compare_values() and returns the first non-0 result, else 0.
+  # This function combines the logic of compareEVR() and labelCompare().
+  #
+  # "version_should" can be v, v-r, or e:v-r.
+  # "version_is" will always be at least v-r, can be e:v-r
+  def rpm_compareEVR(should_hash, is_hash)
+    # pass on to rpm labelCompare
+
+    if !should_hash[:epoch].nil?
+      rc = compare_values(should_hash[:epoch], is_hash[:epoch])
+      return rc unless rc == 0
+    end
+
+    rc = compare_values(should_hash[:version], is_hash[:version])
+    return rc unless rc == 0
+
+    # here is our special case, PUP-1244.
+    # if should_hash[:release] is nil (not specified by the user),
+    # and comparisons up to here are equal, return equal. We need to
+    # evaluate to whatever level of detail the user specified, so we
+    # don't end up upgrading or *downgrading* when not intended.
+    #
+    # This should NOT be triggered if we're trying to ensure latest.
+    return 0 if should_hash[:release].nil?
+
+    rc = compare_values(should_hash[:release], is_hash[:release])
+
+    return rc
+  end
+
+  # this method is a native implementation of the
+  # compare_values function in rpm's python bindings,
+  # found in python/header-py.c, as used by rpm.
+  def compare_values(s1, s2)
+    if s1.nil? && s2.nil?
+      return 0
+    elsif ( not s1.nil? ) && s2.nil?
+      return 1
+    elsif s1.nil? && (not s2.nil?)
+      return -1
+    end
+    return rpmvercmp(s1, s2)
+  end
+
   private
   # @param line [String] one line of rpm package query information
   # @return [Hash] of NEVRA_FIELDS strings parsed from package info
@@ -287,6 +392,7 @@ Puppet::Type.type(:package).provide :rpm, :source => :rpm, :parent => Puppet::Pr
       self::NEVRA_FIELDS.zip(match.captures) { |f, v| hash[f] = v }
       hash[:provider] = self.name
       hash[:ensure] = "#{hash[:version]}-#{hash[:release]}"
+      hash[:ensure].prepend("#{hash[:epoch]}:") if hash[:epoch] != '0'
     else
       Puppet.debug("Failed to match rpm line #{line}")
     end

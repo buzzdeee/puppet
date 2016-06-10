@@ -34,10 +34,31 @@ describe "Two step scoping for variables" do
         MANIFEST
       end.to raise_error(/The operator '-=' is no longer supported/)
     end
-  end
 
-  it "when using a template ignores the dynamic value of the var when using the @varname syntax" do
-    expect_the_message_to_be('node_msg') do <<-MANIFEST
+    it "issues error about built-in variable when reassigning to name" do
+        enc_node = Puppet::Node.new("the_node", { :parameters => {  } })
+
+        expect {
+          compile_to_catalog("$name = 'never in a 0xF4240 years'", enc_node)
+        }.to raise_error(
+          Puppet::Error,
+          /Cannot reassign built in \(or already assigned\) variable '\$name' at line 1(\:7)? on node the_node/
+        )
+    end
+
+    it "issues error about built-in variable when reassigning to title" do
+        enc_node = Puppet::Node.new("the_node", { :parameters => {  } })
+
+        expect {
+          compile_to_catalog("$title = 'never in a 0xF4240 years'", enc_node)
+        }.to raise_error(
+          Puppet::Error,
+          /Cannot reassign built in \(or already assigned\) variable '\$title' at line 1(\:8)? on node the_node/
+        )
+    end
+
+    it "when using a template ignores the dynamic value of the var when using the @varname syntax" do
+      expect_the_message_to_be('node_msg') do <<-MANIFEST
           node default {
             $var = "node_msg"
             include foo
@@ -90,7 +111,26 @@ describe "Two step scoping for variables" do
           class bar inherits bar_bamama {
             notify { 'something': message => inline_template("<%= @var %>"), }
           }
-      MANIFEST
+        MANIFEST
+      end
+    end
+
+    describe 'handles 3.x/4.x functions' do
+      it 'can call a 3.x function via call_function' do
+        expect_the_message_to_be('yes') do <<-MANIFEST
+          $msg = inline_template('<%= scope().call_function("fqdn_rand", [30]).to_i <= 30 ? "yes" : "no" %>')
+          notify { 'something': message => $msg }
+          MANIFEST
+        end
+      end
+
+      it 'it can call a 4.x function via call_function' do
+        expect_the_message_to_be('yes') do <<-MANIFEST
+          $msg = inline_template('<%= scope().call_function("with", ["yes"]) { |x| x } %>')
+          notify { 'something': message => $msg }
+          MANIFEST
+        end
+      end
     end
   end
 
@@ -589,12 +629,11 @@ describe "Two step scoping for variables" do
 
     it "does not allow the enc to specify an existing top scope var" do
       enc_node = Puppet::Node.new("the_node", { :parameters => { "var" => 'from_enc' } })
-
       expect {
         compile_to_catalog("$var = 'top scope'", enc_node)
       }.to raise_error(
-      Puppet::Error,
-      /Cannot reassign variable var at line 1(\:6)? on node the_node/
+        Puppet::Error,
+        /Cannot reassign variable '\$var' at line 1(\:6)? on node the_node/
       )
     end
 

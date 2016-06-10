@@ -88,12 +88,29 @@ class Runtime3Converter
   end
   alias :convert2_Hash :convert_Hash
 
+  def convert_Iterator(o, scope, undef_value)
+    raise Puppet::Error, 'Use of an Iterator is not supported here'
+  end
+  alias :convert2_Iterator :convert_Iterator
+
   def convert_Regexp(o, scope, undef_value)
     # Puppet 3x cannot handle parameter values that are reqular expressions. Turn into regexp string in
     # source form
     o.inspect
   end
   alias :convert2_Regexp :convert_Regexp
+
+  def convert_SemVer(o, scope, undef_value)
+    # Puppet 3x cannot handle SemVers. Use the string form
+    o.to_s
+  end
+  alias :convert2_SemVer :convert_SemVer
+
+  def convert_SemVerRange(o, scope, undef_value)
+    # Puppet 3x cannot handle SemVerRanges. Use the string form
+    o.to_s
+  end
+  alias :convert2_SemVerRange :convert_SemVerRange
 
   def convert_Symbol(o, scope, undef_value)
     case o
@@ -140,12 +157,12 @@ class Runtime3Converter
       when Puppet::Pops::Types::PResourceType
         type_name = split_type.type_name
         title = split_type.title
-        if type_name =~ /^(::)?[Cc]lass/
+        if type_name =~ /^(::)?[Cc]lass$/
           ['class', title.nil? ? nil : title.sub(/^::/, '')]
         else
           # Ensure that title is '' if nil
           # Resources with absolute name always results in error because tagging does not support leading ::
-          [type_name.nil? ? nil : type_name.sub(/^::/, ''), title.nil? ? '' : title]
+          [type_name.nil? ? nil : type_name.sub(/^::/, '').downcase, title.nil? ? '' : title]
         end
       else
         raise ArgumentError, "Cannot split the type #{catalog_type.class}, it represents neither a PHostClassType, nor a PResourceType."

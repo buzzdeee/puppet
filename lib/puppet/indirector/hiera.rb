@@ -18,11 +18,14 @@ class Puppet::Indirector::Hiera < Puppet::Indirector::Terminus
   def find(request)
     not_found = Object.new
     options = request.options
+    Puppet.debug { "Performing a hiera indirector lookup of #{request.key} with options #{options.inspect}" }
     value = hiera.lookup(request.key, not_found, Hiera::Scope.new(options[:variables]), nil, convert_merge(options[:merge]))
     throw :no_such_key if value.equal?(not_found)
     value
   rescue *DataBindingExceptions => detail
-    raise Puppet::DataBinding::LookupError.new(detail.message, detail)
+    error = Puppet::DataBinding::LookupError.new("DataBinding 'hiera': #{detail.message}")
+    error.set_backtrace(detail.backtrace)
+    raise error
   end
 
   private
@@ -34,8 +37,11 @@ class Puppet::Indirector::Hiera < Puppet::Indirector::Terminus
   def convert_merge(merge)
     case merge
     when nil
+    when 'first'
       # Nil is OK. Defaults to Hiera :priority
       nil
+    when Puppet::Pops::MergeStrategy
+      convert_merge(merge.configuration)
     when 'unique'
       # Equivalent to Hiera :array
       :array

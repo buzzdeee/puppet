@@ -8,11 +8,12 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     interpreted as the path to a local gem file.  If source is not present at all,
     the gem will be installed from the default gem repositories.
 
-    This provider supports the `install_options` attribute, which allows command-line flags to be passed to the gem command.
+    This provider supports the `install_options` and `uninstall_options` attributes,
+    which allow command-line flags to be passed to the gem command.
     These options should be specified as a string (e.g. '--flag'), a hash (e.g. {'--flag' => 'value'}),
     or an array where each element is either a string or a hash."
 
-  has_feature :versionable, :install_options
+  has_feature :versionable, :install_options, :uninstall_options
 
   commands :gemcmd => "gem"
 
@@ -54,12 +55,12 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     # so we don't need to check for them
 
     if desc =~ /^(\S+)\s+\((.+)\)/
-      name = $1
+      gem_name = $1
       versions = $2.split(/,\s*/)
       {
-        :name     => name,
+        :name     => gem_name,
         :ensure   => versions.map{|v| v.split[0]},
-        :provider => :gem
+        :provider => name
       }
     else
       Puppet.warning "Could not match #{desc}" unless desc.chomp.empty?
@@ -71,6 +72,22 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
     gemlist(:local => true).collect do |hash|
       new(hash)
     end
+  end
+
+  def insync?(is)
+    return false unless is && is != :absent
+
+    begin
+      dependency = Gem::Dependency.new('', resource[:ensure])
+    rescue ArgumentError
+      # Bad requirements will cause an error during gem command invocation, so just return not in sync
+      return false
+    end
+
+    is = [is] unless is.is_a? Array
+
+    # Check if any version matches the dependency
+    is.any? { |version| dependency.match?('', version) }
   end
 
   def install(useversion = true)
@@ -94,8 +111,13 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
         # we don't support puppet:// URLs (yet)
         raise Puppet::Error.new("puppet:// URLs are not supported as gem sources")
       else
-        # interpret it as a gem repository
-        command << "--source" << "#{source}" << resource[:name]
+        # check whether it's an absolute file path to help Windows out
+        if Puppet::Util.absolute_path?(source)
+          command << source
+        else
+          # interpret it as a gem repository
+          command << "--source" << "#{source}" << resource[:name]
+        end
       end
     else
       command << "--no-rdoc" << "--no-ri" << resource[:name]
@@ -122,7 +144,15 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
   end
 
   def uninstall
-    gemcmd "uninstall", "-x", "-a", resource[:name]
+    command = [command(:gemcmd), "uninstall"]
+    command << "--executables" << "--all" << resource[:name]
+
+    command += uninstall_options if resource[:uninstall_options]
+
+    output = execute(command)
+
+    # Apparently some stupid gem versions don't exit non-0 on failure
+    self.fail "Could not uninstall: #{output.chomp}" if output.include?("ERROR")
   end
 
   def update
@@ -131,5 +161,9 @@ Puppet::Type.type(:package).provide :gem, :parent => Puppet::Provider::Package d
 
   def install_options
     join_options(resource[:install_options])
+  end
+
+  def uninstall_options
+    join_options(resource[:uninstall_options])
   end
 end

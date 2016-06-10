@@ -1,12 +1,14 @@
+module Puppet::Pops
+module Loader
 # BaseLoader
 # ===
-# An abstract implementation of Puppet::Pops::Loader::Loader
+# An abstract implementation of Loader
 #
 # A derived class should implement `find(typed_name)` and set entries, and possible handle "miss caching".
 #
 # @api private
 #
-class Puppet::Pops::Loader::BaseLoader < Puppet::Pops::Loader::Loader
+class BaseLoader < Loader
 
   # The parent loader
   attr_reader :parent
@@ -38,6 +40,18 @@ class Puppet::Pops::Loader::BaseLoader < Puppet::Pops::Loader::Loader
     end
   end
 
+  # @api public
+  #
+  def loaded_entry(typed_name, check_dependencies = false)
+    if @named_values.has_key?(typed_name)
+      @named_values[typed_name]
+    elsif parent
+      parent.loaded_entry(typed_name, check_dependencies)
+    else
+      nil
+    end
+  end
+
   # This method is final (subclasses should not override it)
   #
   # @api private
@@ -49,14 +63,30 @@ class Puppet::Pops::Loader::BaseLoader < Puppet::Pops::Loader::Loader
   # @api private
   #
   def set_entry(typed_name, value, origin = nil)
-    if entry = @named_values[typed_name] then fail_redefined(entry); end
-    @named_values[typed_name] = Puppet::Pops::Loader::Loader::NamedEntry.new(typed_name, value, origin)
+
+    # It is never ok to redefine in the very same loader unless redefining a 'not found'
+    if entry = @named_values[typed_name]
+      fail_redefine(entry) unless entry.value.nil?
+    end
+
+    # Check if new entry shadows existing entry and fail
+    # (unless special loader allows shadowing)
+    if typed_name.type == :type && !allow_shadowing?
+      entry = loaded_entry(typed_name)
+      if entry
+        fail_redefine(entry) unless entry.value.nil? #|| entry.value == value
+      end
+    end
+
+    @last_result = Loader::NamedEntry.new(typed_name, value, origin)
+    @last_name = typed_name
+    @named_values[typed_name] = @last_result
   end
 
   # @api private
   #
   def add_entry(type, name, value, origin)
-    set_entry(Puppet::Pops::Loader::Loader::TypedName.new(type, name), value, origin)
+    set_entry(TypedName.new(type, name), value, origin)
   end
 
   # Promotes an already created entry (typically from another loader) to this loader
@@ -69,23 +99,33 @@ class Puppet::Pops::Loader::BaseLoader < Puppet::Pops::Loader::Loader
     @named_values[typed_name] = named_entry
   end
 
+  protected
+
+  def allow_shadowing?
+    false
+  end
+
   private
 
   def fail_redefine(entry)
-    origin_info = entry.origin ? " Originally set at #{origin_label(entry.origin)}." : "unknown location"
-    raise ArgumentError, "Attempt to redefine entity '#{entry.typed_name}' originally set at #{origin_info}"
+    origin_info = entry.origin ? "Originally set #{origin_label(entry.origin)}." : "Set at unknown location"
+    raise ArgumentError, "Attempt to redefine entity '#{entry.typed_name}'. #{origin_info}"
   end
 
   # TODO: Should not really be here?? - TODO: A Label provider ? semantics for the URI?
   #
   def origin_label(origin)
     if origin && origin.is_a?(URI)
-      origin.to_s
+      format_uri(origin)
     elsif origin.respond_to?(:uri)
-      origin.uri.to_s
+      format_uri(origin.uri)
     else
       origin
     end
+  end
+
+  def format_uri(uri)
+    (uri.scheme == 'puppet' ? 'by ' : 'at ') + uri.to_s.sub(/^puppet:/,'')
   end
 
   # loads in priority order:
@@ -96,7 +136,12 @@ class Puppet::Pops::Loader::BaseLoader < Puppet::Pops::Loader::Loader
   #
   def internal_load(typed_name)
     # avoid calling get_entry, by looking it up
-    @named_values[typed_name] || parent.load_typed(typed_name) || find(typed_name)
+    te = @named_values[typed_name]
+    te = parent.load_typed(typed_name) if te.nil? || te.value.nil?
+    te = find(typed_name) if te.nil? || te.value.nil?
+    te
   end
 
+end
+end
 end

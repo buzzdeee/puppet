@@ -4,21 +4,7 @@ require 'puppet/util/windows'
 class Puppet::FileSystem::Windows < Puppet::FileSystem::Posix
 
   def exist?(path)
-    if ! Puppet.features.manages_symlinks?
-      return ::File.exist?(path)
-    end
-
-    path = path.to_str if path.respond_to?(:to_str) # support WatchedFile
-    path = path.to_s # support String and Pathname
-
-    begin
-      if Puppet::Util::Windows::File.symlink?(path)
-        path = Puppet::Util::Windows::File.readlink(path)
-      end
-      ! Puppet::Util::Windows::File.stat(path).nil?
-    rescue # generally INVALID_HANDLE_VALUE which means 'file not found'
-      false
-    end
+    return Puppet::Util::Windows::File.exist?(path)
   end
 
   def symlink(path, dest, options = {})
@@ -62,7 +48,9 @@ class Puppet::FileSystem::Windows < Puppet::FileSystem::Posix
       stat = Puppet::Util::Windows::File.stat(file_name) rescue nil
 
       # sigh, Ruby + Windows :(
-      if stat && stat.ftype == 'directory'
+      if !stat
+        ::File.unlink(file_name) rescue Dir.rmdir(file_name)
+      elsif stat.ftype == 'directory'
         if Puppet::Util::Windows::File.symlink?(file_name)
           Dir.rmdir(file_name)
         else
@@ -89,6 +77,14 @@ class Puppet::FileSystem::Windows < Puppet::FileSystem::Posix
 
   def chmod(mode, path)
     Puppet::Util::Windows::Security.set_mode(mode, path.to_s)
+  end
+
+  def read_preserve_line_endings(path)
+    contents = path.read( :mode => 'rb', :encoding => Encoding::UTF_8)
+    contents = path.read( :mode => 'rb', :encoding => Encoding::default_external) unless contents.valid_encoding?
+    contents = path.read unless contents.valid_encoding?
+
+    contents
   end
 
   private

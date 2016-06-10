@@ -91,9 +91,41 @@ describe 'Lexer2' do
     "true"     => :BOOLEAN,
     "in"       => :IN,
     "unless"   => :UNLESS,
+    "private"  => :PRIVATE,
+    "type"     => :TYPE,
+    "attr"     => :ATTR,
   }.each do |string, name|
     it "should lex a keyword from '#{string}'" do
       expect(tokens_scanned_from(string)).to match_tokens2(name)
+    end
+  end
+
+  context 'when app_management is off (by default)' do
+    {
+      "application"  => :APPLICATION_R,
+      "consumes"     => :CONSUMES_R,
+      "produces"     => :PRODUCES_R,
+      "site"         => :SITE_R,
+    }.each do |string, name|
+      it "should lex a (future reserved) keyword from '#{string}'" do
+        expect(tokens_scanned_from(string)).to match_tokens2(name)
+      end
+    end
+  end
+
+  context 'when app_managment is (turned) on' do
+    before(:each) { Puppet[:app_management] = true }
+    after(:each) { Puppet[:app_management] = false }
+
+    {
+      "application"  => :APPLICATION,
+      "consumes"     => :CONSUMES,
+      "produces"     => :PRODUCES,
+      "site"         => :SITE,
+    }.each do |string, name|
+      it "should lex a keyword from '#{string}'" do
+        expect(tokens_scanned_from(string)).to match_tokens2(name)
+      end
     end
   end
 
@@ -234,6 +266,19 @@ describe 'Lexer2' do
     '"a${y::_x}"' => [[:DQPRE,    'a',   {:line => 1, :pos=>1, :length=>4 }],
                       [:VARIABLE, 'y::_x',  {:line => 1, :pos=>5, :length=>5 }],
                       [:DQPOST,   '',    {:line => 1, :pos=>11, :length=>1 }]],
+
+    '"a${_x[1]}"' => [[:DQPRE,    'a',   {:line => 1, :pos=>1, :length=>4 }],
+                      [:VARIABLE, '_x',  {:line => 1, :pos=>5, :length=>2 }],
+                      [:LBRACK,   '[',   {:line => 1, :pos=>7, :length=>1 }],
+                      [:NUMBER,   '1',   {:line => 1, :pos=>8, :length=>1 }],
+                      [:RBRACK,   ']',   {:line => 1, :pos=>9, :length=>1 }],
+                      [:DQPOST,   '',    {:line => 1, :pos=>11, :length=>1 }]],
+
+    '"a${_x.foo}"'=> [[:DQPRE,    'a',   {:line => 1, :pos=>1, :length=>4 }],
+                      [:VARIABLE, '_x',  {:line => 1, :pos=>5, :length=>2 }],
+                      [:DOT,      '.',   {:line => 1, :pos=>7, :length=>1 }],
+                      [:NAME,     'foo', {:line => 1, :pos=>8, :length=>3 }],
+                      [:DQPOST,   '',    {:line => 1, :pos=>12, :length=>1 }]],
   }.each do |source, expected|
     it "should lex an interpolated variable 'x' from #{source}" do
       expect(tokens_scanned_from(source)).to match_tokens2(*expected)
@@ -277,13 +322,19 @@ describe 'Lexer2' do
     end
   end
 
+  it 'detects unterminated multiline comment' do
+    expect { tokens_scanned_from("/* not terminated\nmultiline\ncomment") }.to raise_error(Puppet::ParseErrorWithIssue) { |e|
+      expect(e.issue_code).to be(Puppet::Pops::Issues::UNCLOSED_MLCOMMENT.issue_code)
+    }
+  end
+
   { "=~" => [:MATCH, "=~ /./"],
     "!~" => [:NOMATCH, "!~ /./"],
     ","  => [:COMMA, ", /./"],
     "("  => [:LPAREN, "( /./"],
-    "["  => [:LISTSTART, "[ /./"],
-    "["  => [[:NAME, :LBRACK], "a[ /./"],
-    "["  => [[:NAME, :LISTSTART], "a [ /./"],
+    "[ (liststart)"             => [:LISTSTART, "[ /./"],
+    "[ (LBRACK)"                => [[:NAME, :LBRACK], "a[ /./"],
+    "[ (liststart after name)"  => [[:NAME, :LISTSTART], "a [ /./"],
     "{"  => [:LBRACE, "{ /./"],
     "+"  => [:PLUS, "+ /./"],
     "-"  => [:MINUS, "- /./"],
@@ -361,6 +412,75 @@ describe 'Lexer2' do
         [:DQPOST, " After"]
         )
     end
+
+    context 'with bad syntax' do
+      def expect_issue(code, issue)
+        expect { tokens_scanned_from(code) }.to raise_error(Puppet::ParseErrorWithIssue) { |e|
+          expect(e.issue_code).to be(issue.issue_code)
+        }
+      end
+
+      it 'detects and reports HEREDOC_UNCLOSED_PARENTHESIS' do
+        code = <<-CODE
+        @(END:syntax/t
+        Text
+        |- END
+        CODE
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_UNCLOSED_PARENTHESIS)
+      end
+
+      it 'detects and reports HEREDOC_WITHOUT_END_TAGGED_LINE' do
+        code = <<-CODE
+        @(END:syntax/t)
+        Text
+        CODE
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_WITHOUT_END_TAGGED_LINE)
+      end
+
+      it 'detects and reports HEREDOC_INVALID_ESCAPE' do
+        code = <<-CODE
+        @(END:syntax/x)
+        Text
+        |- END
+        CODE
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_INVALID_ESCAPE)
+      end
+
+      it 'detects and reports HEREDOC_INVALID_SYNTAX' do
+        code = <<-CODE
+        @(END:syntax/t/p)
+        Text
+        |- END
+        CODE
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_INVALID_SYNTAX)
+      end
+
+      it 'detects and reports HEREDOC_WITHOUT_TEXT' do
+        code = '@(END:syntax/t)'
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_WITHOUT_TEXT)
+      end
+
+      it 'detects and reports HEREDOC_MULTIPLE_AT_ESCAPES' do
+        code = <<-CODE
+        @(END:syntax/tst)
+        Tex\\tt\\n
+        |- END
+        CODE
+        expect_issue(code, Puppet::Pops::Issues::HEREDOC_MULTIPLE_AT_ESCAPES)
+      end
+    end
+  end
+  context 'when not given multi byte characters' do
+    it 'produces byte offsets for tokens' do
+      code = <<-"CODE"
+1 2\n3
+      CODE
+      expect(tokens_scanned_from(code)).to match_tokens2(
+        [:NUMBER, '1', {:line => 1, :offset => 0, :length=>1}],
+        [:NUMBER, '2', {:line => 1, :offset => 2, :length=>1}],
+        [:NUMBER, '3', {:line => 2, :offset => 4, :length=>1}]
+      )
+    end
   end
 
   context 'when dealing with multi byte characters' do
@@ -370,6 +490,30 @@ describe 'Lexer2' do
       CODE
       # >= Ruby 1.9.3 reports \u
        expect(tokens_scanned_from(code)).to match_tokens2([:STRING, "x\u2713y"])
+    end
+
+    it 'should support unicode characters in long form' do
+      code = <<-CODE
+      "x\\u{1f452}y"
+      CODE
+      expect(tokens_scanned_from(code)).to match_tokens2([:STRING, "x\u{1f452}y"])
+    end
+
+    it 'produces byte offsets that counts each byte in a comment' do
+      code = <<-"CODE"
+      # \u{0400}\na
+      CODE
+      expect(tokens_scanned_from(code.strip)).to match_tokens2([:NAME, 'a', {:line => 2, :offset => 5, :length=>1}])
+    end
+
+    it 'produces byte offsets that counts each byte in value token' do
+      code = <<-"CODE"
+      '\u{0400}'\na
+      CODE
+      expect(tokens_scanned_from(code.strip)).to match_tokens2(
+        [:STRING, "\u{400}", {:line => 1, :offset => 0, :length=>4}],
+        [:NAME, 'a', {:line => 2, :offset => 5, :length=>1}]
+      )
     end
 
     it 'should not select LISTSTART token when preceded by multibyte chars' do
@@ -448,7 +592,7 @@ describe 'Lexer2' do
       [:VARIABLE, "x"],
       :EQUALS,
       [:NUMBER, "10"],
-      [:RENDER_STRING, "just text\n"]
+      [:RENDER_STRING, "      just text\n"]
       )
     end
 
@@ -464,7 +608,39 @@ describe 'Lexer2' do
       [:VARIABLE, "x"],
       :EQUALS,
       [:NUMBER, "10"],
-      [:RENDER_STRING, "just text\n"]
+      [:RENDER_STRING, "      just text\n"]
+      )
+    end
+
+    it 'epp comments strips left whitespace when preceding is right trim' do
+      code = <<-CODE
+      This is <% $x=10 -%>
+      space-before-me-but-not-after   <%# This is an epp comment %>
+      just text
+      CODE
+      expect(epp_tokens_scanned_from(code)).to match_tokens2(
+      :EPP_START,
+      [:RENDER_STRING, "      This is "],
+      [:VARIABLE, "x"],
+      :EQUALS,
+      [:NUMBER, "10"],
+      [:RENDER_STRING, "      space-before-me-but-not-after\n      just text\n"]
+      )
+    end
+
+    it 'epp comments strips left whitespace on same line when preceding is not right trim' do
+      code = <<-CODE
+      This is <% $x=10 %>
+      <%# This is an epp comment -%>
+      just text
+      CODE
+      expect(epp_tokens_scanned_from(code)).to match_tokens2(
+      :EPP_START,
+      [:RENDER_STRING, "      This is "],
+      [:VARIABLE, "x"],
+      :EQUALS,
+      [:NUMBER, "10"],
+      [:RENDER_STRING, "\n      just text\n"]
       )
     end
 
@@ -479,9 +655,153 @@ describe 'Lexer2' do
       [:VARIABLE, "x"],
       :EQUALS,
       [:NUMBER, "10"],
-      [:RENDER_STRING, "<% this is escaped epp %>\n"]
+      [:RENDER_STRING, "      <% this is escaped epp %>\n"]
       )
+    end
+
+    context 'with bad epp syntax' do
+      def expect_issue(code, issue)
+        expect { epp_tokens_scanned_from(code) }.to raise_error(Puppet::ParseErrorWithIssue) { |e|
+          expect(e.issue_code).to be(issue.issue_code)
+        }
+      end
+
+      it 'detects and reports EPP_UNBALANCED_TAG' do
+        expect_issue('<% asf', Puppet::Pops::Issues::EPP_UNBALANCED_TAG)
+      end
+
+      it 'detects and reports EPP_UNBALANCED_COMMENT' do
+        expect_issue('<%# asf', Puppet::Pops::Issues::EPP_UNBALANCED_COMMENT)
+      end
+
+      it 'detects and reports EPP_UNBALANCED_EXPRESSION' do
+        expect_issue('asf <%', Puppet::Pops::Issues::EPP_UNBALANCED_EXPRESSION)
+      end
+    end
+  end
+
+  context 'when parsing bad code' do
+    def expect_issue(code, issue)
+      expect { tokens_scanned_from(code) }.to raise_error(Puppet::ParseErrorWithIssue) do |e|
+        expect(e.issue_code).to be(issue.issue_code)
+      end
+    end
+
+    it 'detects and reports issue ILLEGAL_CLASS_REFERENCE' do
+      expect_issue('A::3', Puppet::Pops::Issues::ILLEGAL_CLASS_REFERENCE)
+    end
+
+    it 'detects and reports issue ILLEGAL_FULLY_QUALIFIED_CLASS_REFERENCE' do
+      expect_issue('::A::3', Puppet::Pops::Issues::ILLEGAL_FULLY_QUALIFIED_CLASS_REFERENCE)
+    end
+
+    it 'detects and reports issue ILLEGAL_FULLY_QUALIFIED_NAME' do
+      expect_issue('::a::3', Puppet::Pops::Issues::ILLEGAL_FULLY_QUALIFIED_NAME)
+    end
+
+    it 'detects and reports issue ILLEGAL_NUMBER' do
+     expect_issue('3g', Puppet::Pops::Issues::ILLEGAL_NUMBER)
+    end
+
+    it 'detects and reports issue INVALID_HEX_NUMBER' do
+      expect_issue('0x3g', Puppet::Pops::Issues::INVALID_HEX_NUMBER)
+    end
+
+    it 'detects and reports issue INVALID_OCTAL_NUMBER' do
+      expect_issue('038', Puppet::Pops::Issues::INVALID_OCTAL_NUMBER)
+    end
+
+    it 'detects and reports issue INVALID_DECIMAL_NUMBER' do
+      expect_issue('4.3g', Puppet::Pops::Issues::INVALID_DECIMAL_NUMBER)
+    end
+
+    it 'detects and reports issue NO_INPUT_TO_LEXER' do
+      expect { Puppet::Pops::Parser::Lexer2.new.fullscan }.to raise_error(Puppet::ParseErrorWithIssue) { |e|
+        expect(e.issue_code).to be(Puppet::Pops::Issues::NO_INPUT_TO_LEXER.issue_code)
+      }
+    end
+
+    it 'detects and reports issue UNCLOSED_QUOTE' do
+      expect_issue('"asd', Puppet::Pops::Issues::UNCLOSED_QUOTE)
+    end
+  end
+
+  context 'when dealing with non UTF-8 and Byte Order Marks (BOMs)' do
+      {
+      'UTF_8'      => [0xEF, 0xBB, 0xBF],
+      'UTF_16_1'   => [0xFE, 0xFF],
+      'UTF_16_2'   => [0xFF, 0xFE],
+      'UTF_32_1'   => [0x00, 0x00, 0xFE, 0xFF],
+      'UTF_32_2'   => [0xFF, 0xFE, 0x00, 0x00],
+      'UTF_1'      => [0xF7, 0x64, 0x4C],
+      'UTF_EBCDIC' => [0xDD, 0x73, 0x66, 0x73],
+      'SCSU'       => [0x0E, 0xFE, 0xFF],
+      'BOCU'       => [0xFB, 0xEE, 0x28],
+      'GB_18030'   => [0x84, 0x31, 0x95, 0x33]
+      }.each do |key, bytes|
+        it "errors on the byte order mark for #{key} '[#{bytes.map() {|b| '%X' % b}.join(' ')}]'" do
+          format_name = key.split('_')[0,2].join('-')
+          bytes_str = "\\[#{bytes.map {|b| '%X' % b}.join(' ')}\\]"
+          fix =  " - remove these from the puppet source"
+          expect {
+            tokens_scanned_from(bytes.pack('C*'))
+          }.to raise_error(Puppet::ParseErrorWithIssue,
+            /Illegal #{format_name} .* at beginning of input: #{bytes_str}#{fix}/)
+        end
+
+       it "can use a possibly 'broken' UTF-16 string without problems for #{key}" do
+         format_name = key.split('_')[0,2].join('-')
+         string = bytes.pack('C*').force_encoding('UTF-16')
+         bytes_str = "\\[#{string.bytes.map {|b| '%X' % b}.join(' ')}\\]"
+         fix =  " - remove these from the puppet source"
+         expect {
+           tokens_scanned_from(string)
+         }.to raise_error(Puppet::ParseErrorWithIssue,
+           /Illegal #{format_name} .* at beginning of input: #{bytes_str}#{fix}/)
+       end
     end
   end
 end
 
+describe Puppet::Pops::Parser::Lexer2 do
+
+  include PuppetSpec::Files
+
+  # First line of Rune version of Rune poem at http://www.columbia.edu/~fdc/utf8/
+  # characters chosen since they will not parse on Windows with codepage 437 or 1252
+  # Section 3.2.1.3 of Ruby spec guarantees that \u strings are encoded as UTF-8
+  # Runes (may show up as garbage if font is not available): ᚠᛇᚻ᛫ᛒᛦᚦ᛫ᚠᚱᚩᚠᚢᚱ᛫ᚠᛁᚱᚪ᛫ᚷᛖᚻᚹᛦᛚᚳᚢᛗ
+  let (:rune_utf8) {
+    "\u16A0\u16C7\u16BB\u16EB\u16D2\u16E6\u16A6\u16EB\u16A0\u16B1\u16A9\u16A0\u16A2"
+    "\u16B1\u16EB\u16A0\u16C1\u16B1\u16AA\u16EB\u16B7\u16D6\u16BB\u16B9\u16E6\u16DA"
+    "\u16B3\u16A2\u16D7"
+  }
+
+  context 'when lexing files from disk' do
+    it 'should always read files as UTF-8' do
+      if Puppet.features.microsoft_windows? && Encoding.default_external == Encoding::UTF_8
+        raise 'This test must be run in a codepage other than 65001 to validate behavior'
+      end
+
+      manifest_code = "notify { '#{rune_utf8}': }"
+      manifest = file_containing('manifest.pp', manifest_code)
+      lexed_file = described_class.new.lex_file(manifest)
+
+      expect(lexed_file.string.encoding).to eq(Encoding::UTF_8)
+      expect(lexed_file.string).to eq(manifest_code)
+    end
+
+    it 'currently errors when the UTF-8 BOM (Byte Order Mark) is present when lexing files' do
+      bom = "\uFEFF"
+
+        manifest_code = "#{bom}notify { '#{rune_utf8}': }"
+        manifest = file_containing('manifest.pp', manifest_code)
+
+        expect {
+          lexed_file = described_class.new.lex_file(manifest)
+        }.to raise_error(Puppet::ParseErrorWithIssue,
+          'Illegal UTF-8 Byte Order mark at beginning of input: [EF BB BF] - remove these from the puppet source')
+    end
+  end
+
+end

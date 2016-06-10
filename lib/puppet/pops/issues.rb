@@ -1,7 +1,8 @@
 # Defines classes to deal with issues, and message formatting and defines constants with Issues.
 # @api public
 #
-module Puppet::Pops::Issues
+module Puppet::Pops
+module Issues
   # Describes an issue, and can produce a message for an occurrence of the issue.
   #
   class Issue
@@ -48,7 +49,7 @@ module Puppet::Pops::Issues
         # Evaluate the message block in the msg data's binding
         msgdata.format(hash, &message_block)
       rescue StandardError => e
-        Puppet::Pops::Issues::MessageData
+        MessageData
         raise RuntimeError, "Error while reporting issue: #{issue_code}. #{e.message}", caller
       end
     end
@@ -73,19 +74,30 @@ module Puppet::Pops::Issues
       instance_eval &block
     end
 
-    # Returns the label provider given as a key in the hash passed to #format.
-    # If given an argument, calls #label on the label provider (caller would otherwise have to
-    # call label.label(it)
+    # Obtains the label provider given as a key `:label` in the hash passed to #format. The label provider is
+    # return if no arguments are given. If given an argument, returns the result of calling #label on the label
+    # provider.
     #
-    def label(it = nil)
-      raise "Label provider key :label must be set to produce the text of the message!" unless @data[:label]
-      it.nil? ? @data[:label] : @data[:label].label(it)
+    # @param args [Object] one object to obtain a label for or zero arguments to obtain the label provider
+    # @return [LabelProvider,String] the label provider or label depending on if an argument is given or not
+    # @raise [Puppet::Error] if no label provider is found
+    def label(*args)
+      args.empty? ? label_provider : label_provider.label(args[0])
+    end
+
+    # Returns the label provider given as key `:label` in the hash passed to #format.
+    # @return [LabelProvider] the label provider
+    # @raise [Puppet::Error] if no label provider is found
+    def label_provider
+      label_provider = @data[:label]
+      raise Puppet::Error, 'Label provider key :label must be set to produce the text of the message!' unless label_provider
+      label_provider
     end
 
     # Returns the label provider given as a key in the hash passed to #format.
     #
     def semantic
-      raise "Label provider key :semantic must be set to produce the text of the message!" unless @data[:semantic]
+      raise Puppet::Error, 'Label provider key :semantic must be set to produce the text of the message!' unless @data[:semantic]
       @data[:semantic]
     end
   end
@@ -151,6 +163,10 @@ module Puppet::Pops::Issues
     "Classes, definitions, and nodes may only appear at toplevel or inside other classes"
   end
 
+  NOT_ABSOLUTE_TOP_LEVEL = hard_issue :NOT_ABSOLUTE_TOP_LEVEL do
+    "#{label.a_an_uc(semantic)} may only appear at toplevel"
+  end
+
   CROSS_SCOPE_ASSIGNMENT = hard_issue :CROSS_SCOPE_ASSIGNMENT, :name do
     "Illegal attempt to assign to '#{name}'. Cannot assign to variables in other namespaces"
   end
@@ -162,16 +178,26 @@ module Puppet::Pops::Issues
 
   # Variables are immutable, cannot reassign in the same assignment scope
   ILLEGAL_REASSIGNMENT = hard_issue :ILLEGAL_REASSIGNMENT, :name do
-    "Cannot reassign variable #{name}"
+    if Validation::Checker4_0::RESERVED_PARAMETERS[name]
+      "Cannot reassign built in (or already assigned) variable '$#{name}'"
+    else
+      "Cannot reassign variable '$#{name}'"
+    end
   end
 
+  # Variables facts and trusted
   ILLEGAL_RESERVED_ASSIGNMENT = hard_issue :ILLEGAL_RESERVED_ASSIGNMENT, :name do
-    "Attempt to assign to a reserved variable name: '#{name}'"
+    "Attempt to assign to a reserved variable name: '$#{name}'"
   end
 
   # Assignment cannot be made to numeric match result variables
   ILLEGAL_NUMERIC_ASSIGNMENT = issue :ILLEGAL_NUMERIC_ASSIGNMENT, :varname do
     "Illegal attempt to assign to the numeric match result variable '$#{varname}'. Numeric variables are not assignable"
+  end
+
+  # Assignment can only be made to certain types of left hand expressions such as variables.
+  ILLEGAL_ASSIGNMENT_CONTEXT = hard_issue :ILLEGAL_ASSIGNMENT_CONTEXT do
+    "Assignment not allowed here"
   end
 
   # parameters cannot have numeric names, clashes with match result variables
@@ -192,6 +218,18 @@ module Puppet::Pops::Issues
   #
   ILLEGAL_ASSIGNMENT_VIA_INDEX = hard_issue :ILLEGAL_ASSIGNMENT_VIA_INDEX do
     "Illegal attempt to assign to #{label.a_an(semantic)} via [index/key]. Not an assignable reference"
+  end
+
+  ILLEGAL_MULTI_ASSIGNMENT_SIZE = hard_issue :ILLEGAL_MULTI_ASSIGNMENT_SIZE, :expected, :actual do
+    "Mismatched number of assignable entries and values, expected #{expected}, got #{actual}"
+  end
+
+  MISSING_MULTI_ASSIGNMENT_KEY = hard_issue :MISSING_MULTI_ASSIGNMENT_KEY, :key do
+    "No value for required key '#{key}' in assignment to variables from hash"
+  end
+
+  MISSING_MULTI_ASSIGNMENT_VARIABLE = hard_issue :MISSING_MULTI_ASSIGNMENT_VARIABLE, :name do
+    "No value for required variable '$#{name}' in assignment to variables from class reference"
   end
 
   APPENDS_DELETES_NO_LONGER_SUPPORTED = hard_issue :APPENDS_DELETES_NO_LONGER_SUPPORTED, :operator do
@@ -243,11 +281,23 @@ module Puppet::Pops::Issues
   end
 
   ILLEGAL_NAME = hard_issue :ILLEGAL_NAME, :name do
-    "Illegal name. The given name #{name} does not conform to the naming rule /^((::)?[a-z_]\w*)(::[a-z]\w*)*$/"
+    "Illegal name. The given name '#{name}' does not conform to the naming rule /^((::)?[a-z_]\w*)(::[a-z]\\w*)*$/"
+  end
+
+  ILLEGAL_SINGLE_TYPE_MAPPING = hard_issue :ILLEGAL_TYPE_MAPPING, :expression do
+    "Illegal type mapping. Expected a Type on the left side, got #{label.a_an_uc(semantic)}"
+  end
+
+  ILLEGAL_REGEXP_TYPE_MAPPING = hard_issue :ILLEGAL_TYPE_MAPPING, :expression do
+    "Illegal type mapping. Expected a Tuple[Regexp,String] on the left side, got #{label.a_an_uc(semantic)}"
+  end
+
+  ILLEGAL_PARAM_NAME = hard_issue :ILLEGAL_PARAM_NAME, :name do
+    "Illegal parameter name. The given name '#{name}' does not conform to the naming rule /^[a-z_]\\w*$/"
   end
 
   ILLEGAL_VAR_NAME = hard_issue :ILLEGAL_VAR_NAME, :name do
-    "Illegal variable name, The given name '#{name}' does not conform to the naming rule /^((::)?[a-z]\w*)*((::)?[a-z_]\w*)$/"
+    "Illegal variable name, The given name '#{name}' does not conform to the naming rule /^((::)?[a-z]\\w*)*((::)?[a-z_]\\w*)$/"
   end
 
   ILLEGAL_NUMERIC_VAR_NAME = hard_issue :ILLEGAL_NUMERIC_VAR_NAME, :name do
@@ -321,6 +371,12 @@ module Puppet::Pops::Issues
     "Attempt to use unsupported range in #{label.a_an(semantic)}, #{count} values given for max 1"
   end
 
+  # Issues when expressions that are not implemented or activated in the current version are used.
+  #
+  UNSUPPORTED_EXPRESSION = issue :UNSUPPORTED_EXPRESSION do
+    "Expressions of type #{label.a_an(semantic)} are not supported in this version of Puppet"
+  end
+
   ILLEGAL_RELATIONSHIP_OPERAND_TYPE = issue :ILLEGAL_RELATIONSHIP_OPERAND_TYPE, :operand do
     "Illegal relationship operand, can not form a relationship with #{label.a_an(operand)}. A Catalog type is required."
   end
@@ -372,6 +428,10 @@ module Puppet::Pops::Issues
       "#{expected_classes[0]} is"
     end
     "#{label.a_an_uc(left_value)}[] cannot use #{actual} where #{expected_text} expected"
+  end
+
+  BAD_NOT_UNDEF_SLICE_TYPE = issue :BAD_NOT_UNDEF_SLICE_TYPE, :base_type, :actual do
+    "#{base_type}[] argument must be a Type or a String. Got #{actual}"
   end
 
   BAD_TYPE_SLICE_TYPE = issue :BAD_TYPE_SLICE_TYPE, :base_type, :actual do
@@ -446,7 +506,7 @@ module Puppet::Pops::Issues
   end
 
   UNKNOWN_RESOURCE_TYPE = issue :UNKNOWN_RESOURCE_TYPE, :type_name do
-    "Resource type not found: #{type_name.capitalize}"
+    "Resource type not found: #{type_name}"
   end
 
   ILLEGAL_RESOURCE_TYPE = hard_issue :ILLEGAL_RESOURCE_TYPE, :actual do
@@ -458,7 +518,7 @@ module Puppet::Pops::Issues
   end
 
   DUPLICATE_ATTRIBUTE = issue :DUPLICATE_ATTRIBUE, :attribute  do
-    "The attribute '#{attribute}' has already been set in this resource body"
+    "The attribute '#{attribute}' has already been set"
   end
 
   MISSING_TITLE = hard_issue :MISSING_TITLE do
@@ -478,7 +538,7 @@ module Puppet::Pops::Issues
   end
 
   UNKNOWN_RESOURCE = issue :UNKNOWN_RESOURCE, :type_name, :title do
-    "Resource not found: #{type_name.capitalize}['#{title}']"
+    "Resource not found: #{type_name}['#{title}']"
   end
 
   UNKNOWN_RESOURCE_PARAMETER = issue :UNKNOWN_RESOURCE_PARAMETER, :type_name, :title, :param_name do
@@ -507,7 +567,11 @@ module Puppet::Pops::Issues
   end
 
   IDEM_EXPRESSION_NOT_LAST = issue :IDEM_EXPRESSION_NOT_LAST do
-    "This #{label.label(semantic)} has no effect. A value-producing expression without other effect may only be placed last in a block/sequence"
+    "This #{label.label(semantic)} has no effect. A value was produced and then forgotten (one or more preceding expressions may have the wrong form)"
+  end
+
+  RESOURCE_WITHOUT_TITLE = issue :RESOURCE_WITHOUT_TITLE, :name do
+    "This expression is invalid. Did you try declaring a '#{name}' resource without a title?"
   end
 
   IDEM_NOT_ALLOWED_LAST = hard_issue :IDEM_NOT_ALLOWED_LAST, :container do
@@ -516,6 +580,10 @@ module Puppet::Pops::Issues
 
   RESERVED_WORD = hard_issue :RESERVED_WORD, :word do
     "Use of reserved word: #{word}, must be quoted if intended to be a String value"
+  end
+
+  FUTURE_RESERVED_WORD = issue :FUTURE_RESERVED_WORD, :word do
+    "Use of future reserved word: '#{word}'"
   end
 
   RESERVED_TYPE_NAME = hard_issue :RESERVED_TYPE_NAME, :name do
@@ -534,6 +602,14 @@ module Puppet::Pops::Issues
     "Resource Override can only operate on resources, got: #{label.label(actual)}"
   end
 
+  DUPLICATE_PARAMETER = hard_issue :DUPLICATE_PARAMETER, :param_name do
+    "The parameter '#{param_name}' is declared more than once in the parameter list"
+  end
+
+  DUPLICATE_KEY = issue :DUPLICATE_KEY, :key do
+    "The key '#{key}' is declared more than once"
+  end
+
   RESERVED_PARAMETER = hard_issue :RESERVED_PARAMETER, :container, :param_name do
     "The parameter $#{param_name} redefines a built in parameter in #{label.the(container)}"
   end
@@ -549,4 +625,105 @@ module Puppet::Pops::Issues
   ILLEGAL_CATALOG_RELATED_EXPRESSION = hard_issue :ILLEGAL_CATALOG_RELATED_EXPRESSION do
     "This #{label.label(semantic)} appears in a context where catalog related expressions are not allowed"
   end
+
+  SYNTAX_ERROR = hard_issue :SYNTAX_ERROR, :where do
+    "Syntax error at #{where}"
+  end
+
+  ILLEGAL_CLASS_REFERENCE = hard_issue :ILLEGAL_CLASS_REFERENCE do
+    'Illegal class reference'
+  end
+
+  ILLEGAL_FULLY_QUALIFIED_CLASS_REFERENCE = hard_issue :ILLEGAL_FULLY_QUALIFIED_CLASS_REFERENCE do
+    'Illegal fully qualified class reference'
+  end
+
+  ILLEGAL_FULLY_QUALIFIED_NAME = hard_issue :ILLEGAL_FULLY_QUALIFIED_NAME do
+    'Illegal fully qualified name'
+  end
+
+  ILLEGAL_NAME_OR_BARE_WORD = hard_issue :ILLEGAL_NAME_OR_BARE_WORD do
+    'Illegal name or bare word'
+  end
+
+  ILLEGAL_NUMBER = hard_issue :ILLEGAL_NUMBER, :value do
+    "Illegal number '#{value}'"
+  end
+
+  ILLEGAL_UNICODE_ESCAPE = issue :ILLEGAL_UNICODE_ESCAPE do
+    "Unicode escape '\\u' was not followed by 4 hex digits or 1-6 hex digits in {} or was > 10ffff"
+  end
+
+  INVALID_HEX_NUMBER = hard_issue :INVALID_HEX_NUMBER, :value do
+    "Not a valid hex number #{value}"
+  end
+
+  INVALID_OCTAL_NUMBER = hard_issue :INVALID_OCTAL_NUMBER, :value do
+    "Not a valid octal number #{value}"
+  end
+
+  INVALID_DECIMAL_NUMBER = hard_issue :INVALID_DECIMAL_NUMBER, :value do
+    "Not a valid decimal number #{value}"
+  end
+
+  NO_INPUT_TO_LEXER = hard_issue :NO_INPUT_TO_LEXER do
+    "Internal Error: No string or file given to lexer to process."
+  end
+
+  UNRECOGNIZED_ESCAPE = issue :UNRECOGNIZED_ESCAPE, :ch do
+    "Unrecognized escape sequence '\\#{ch}'"
+  end
+
+  UNCLOSED_QUOTE = hard_issue :UNCLOSED_QUOTE, :after, :followed_by do
+    "Unclosed quote after #{after} followed by '#{followed_by}'"
+  end
+
+  UNCLOSED_MLCOMMENT = hard_issue :UNCLOSED_MLCOMMENT do
+    'Unclosed multiline comment'
+  end
+
+  EPP_INTERNAL_ERROR = hard_issue :EPP_INTERNAL_ERROR, :error do
+    "Internal error: #{error}"
+  end
+
+  EPP_UNBALANCED_TAG = hard_issue :EPP_UNBALANCED_TAG do
+    'Unbalanced epp tag, reached <eof> without closing tag.'
+  end
+
+  EPP_UNBALANCED_COMMENT = hard_issue :EPP_UNBALANCED_COMMENT do
+    'Reaching end after opening <%# without seeing %>'
+  end
+
+  EPP_UNBALANCED_EXPRESSION = hard_issue :EPP_UNBALANCED_EXPRESSION do
+    'Unbalanced embedded expression - opening <% and reaching end of input'
+  end
+
+  HEREDOC_UNCLOSED_PARENTHESIS = hard_issue :HEREDOC_UNCLOSED_PARENTHESIS, :followed_by do
+    "Unclosed parenthesis after '@(' followed by '#{followed_by}'"
+  end
+
+  HEREDOC_WITHOUT_END_TAGGED_LINE = hard_issue :HEREDOC_WITHOUT_END_TAGGED_LINE do
+    'Heredoc without end-tagged line'
+  end
+
+  HEREDOC_INVALID_ESCAPE = hard_issue :HEREDOC_INVALID_ESCAPE, :actual do
+    "Invalid heredoc escape char. Only t, r, n, s,  u, L, $ allowed. Got '#{actual}'"
+  end
+
+  HEREDOC_INVALID_SYNTAX = hard_issue :HEREDOC_INVALID_SYNTAX do
+    'Invalid syntax in heredoc expected @(endtag[:syntax][/escapes])'
+  end
+
+  HEREDOC_WITHOUT_TEXT = hard_issue :HEREDOC_WITHOUT_TEXT do
+    'Heredoc without any following lines of text'
+  end
+
+  HEREDOC_MULTIPLE_AT_ESCAPES = hard_issue :HEREDOC_MULTIPLE_AT_ESCAPES, :escapes do
+    "An escape char for @() may only appear once. Got '#{escapes.join(', ')}'"
+  end
+
+  ILLEGAL_BOM = hard_issue :ILLEGAL_BOM, :format_name, :bytes do
+    "Illegal #{format_name} Byte Order mark at beginning of input: #{bytes} - remove these from the puppet source"
+  end
+end
 end

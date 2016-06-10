@@ -1,7 +1,7 @@
 PSON
 =============
 
-PSON is a variant of {http://json.org JSON} that puppet uses for serializing
+PSON is a variant of [JSON](http://json.org) that puppet uses for serializing
 data to transmit across the network or store on disk. Whereas JSON requires
 that the serialized form is valid unicode (usually UTF-8), PSON is 8-bit ASCII,
 which allows it to represent arbitrary byte sequences in strings.
@@ -32,7 +32,7 @@ characters:
 
 In addition, any character between 0x00 and 0x1F, (except the ones listed
 above) must be encoded as a six byte sequence of \u followed by four ASCII
-digits of the hex number of the desired character.  For example the ASCII
+digits of the hex number of the desired character. For example the ASCII
 Record Separator character (0x1E) is represented as \u001E (0x5C, 0x75, 0x30,
 0x30, 0x31, 0x45).
 

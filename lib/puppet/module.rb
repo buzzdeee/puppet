@@ -48,7 +48,7 @@ class Puppet::Module
 
   def self.is_module_namespaced_name?(name)
     # it must match the full module name according to forge validator
-    return true if name =~ /^[a-zA-Z0-9]+[-][a-z][a-z0-9_]*$/   
+    return true if name =~ /^[a-zA-Z0-9]+[-][a-z][a-z0-9_]*$/
     return false
   end
 
@@ -56,7 +56,7 @@ class Puppet::Module
   attr_writer :environment
 
   attr_accessor :dependencies, :forge_name
-  attr_accessor :source, :author, :version, :license, :puppetversion, :summary, :description, :project_page
+  attr_accessor :source, :author, :version, :license, :summary, :description, :project_page
 
   def initialize(name, path, environment)
     @name = name
@@ -67,9 +67,21 @@ class Puppet::Module
 
     load_metadata if has_metadata?
 
-    validate_puppet_version
-
     @absolute_path_to_manifests = Puppet::FileSystem::PathPattern.absolute(manifests)
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def puppetversion
+    nil
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def puppetversion=(something)
+  end
+
+  # @deprecated The puppetversion module metadata field is no longer used.
+  def validate_puppet_version
+    return
   end
 
   def has_metadata?
@@ -78,7 +90,7 @@ class Puppet::Module
     return false unless Puppet::FileSystem.exist?(metadata_file)
 
     begin
-      metadata =  JSON.parse(File.read(metadata_file))
+      metadata =  JSON.parse(File.read(metadata_file, :encoding => 'utf-8'))
     rescue JSON::JSONError => e
       Puppet.debug("#{name} has an invalid and unparsable metadata.json file.  The parse error: #{e.message}")
       return false
@@ -133,18 +145,21 @@ class Puppet::Module
   end
 
   def load_metadata
-    @metadata = data = JSON.parse(File.read(metadata_file))
+    @metadata = data = JSON.parse(File.read(metadata_file, :encoding => 'utf-8'))
     @forge_name = data['name'].gsub('-', '/') if data['name']
 
-    [:source, :author, :version, :license, :puppetversion, :dependencies].each do |attr|
+    [:source, :author, :version, :license, :dependencies].each do |attr|
       unless value = data[attr.to_s]
-        unless attr == :puppetversion
-          raise MissingMetadata, "No #{attr} module metadata provided for #{self.name}"
-        end
+        raise MissingMetadata, "No #{attr} module metadata provided for #{self.name}"
       end
 
       if attr == :dependencies
+        unless value.is_a?(Array)
+          raise MissingMetadata, "The value for the key dependencies in the file metadata.json of the module #{self.name} must be an array, not: '#{value}'"
+        end
         value.each do |dep|
+          name = dep['name']
+          dep['name'] = name.tr('-', '/') unless name.nil?
           dep['version_requirement'] ||= '>= 0.0.0'
         end
       end
@@ -259,11 +274,10 @@ class Puppet::Module
 
     dependencies.each do |dependency|
       name = dependency['name']
-      forge_name = name.tr('-', '/')
       version_string = dependency['version_requirement'] || '>= 0.0.0'
 
       dep_mod = begin
-        environment.module_by_forge_name(forge_name)
+        environment.module_by_forge_name(name)
       rescue
         nil
       end
@@ -305,11 +319,6 @@ class Puppet::Module
     end
 
     unmet_dependencies
-  end
-
-  def validate_puppet_version
-    return unless puppetversion and puppetversion != Puppet.version
-    raise IncompatibleModule, "Module #{self.name} is only compatible with Puppet version #{puppetversion}, not #{Puppet.version}"
   end
 
   def ==(other)

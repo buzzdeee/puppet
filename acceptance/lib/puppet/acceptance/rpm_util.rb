@@ -4,19 +4,30 @@ module Puppet
       # Utilities for creating a basic rpm package and using it in tests
       @@defaults = {:repo => '/tmp/rpmrepo', :pkg => 'mypkg', :publisher => 'tstpub.lan', :version => '1.0'}
 
+      def rpm_provider(agent)
+        has_dnf = on(agent, 'which dnf', :acceptable_exit_codes => [0,1]).exit_code
+        if has_dnf == 0
+          'dnf'
+        else
+          'yum'
+        end
+      end
+
       def setup(agent)
+        cmd = rpm_provider(agent)
         required_packages = ['createrepo', 'rpm-build']
         required_packages.each do |pkg|
-          unless ((on agent, "yum list installed #{pkg}", :acceptable_exit_codes => (0..255)).exit_code == 0) then
-            on agent, "yum install -y #{pkg}"
+          unless ((on agent, "#{cmd} list installed #{pkg}", :acceptable_exit_codes => (0..255)).exit_code == 0) then
+            on agent, "#{cmd} install -y #{pkg}"
           end
         end
       end
 
       def clean_rpm(agent, o={})
+        cmd = rpm_provider(agent)
         o = @@defaults.merge(o)
         on agent, "rm -rf #{o[:repo]}", :acceptable_exit_codes => (0..255)
-        on agent, "yum remove -y #{o[:pkg]}", :acceptable_exit_codes => (0..255)
+        on agent, "#{cmd} remove -y #{o[:pkg]}", :acceptable_exit_codes => (0..255)
         on agent, "rm -f /etc/yum.repos.d/#{o[:publisher]}.repo", :acceptable_exit_codes => (0..255)
       end
 
@@ -59,10 +70,12 @@ Summary: A very simple toy bin rpm package
 Name: #{o[:pkg]}
 Version: #{o[:version]}
 Release: 1
+Epoch: #{o[:epoch] || 0}
+BuildArch: noarch
 License: GPL+
 Group: Development/Tools
 SOURCE0 : %{name}-%{version}.tar.gz
-URL: http://www.puppetlabs.com/
+URL: https://www.puppetlabs.com/
 
 BuildRoot: %{_topdir}/BUILD/%{name}-%{version}-%{release}-root
 
@@ -98,6 +111,12 @@ EOF
 "
         on agent, "rpmbuild -ba #{o[:repo]}/SPECS/#{o[:pkg]}.spec"
         on agent, "createrepo --update #{o[:repo]}"
+
+        cmd = rpm_provider(agent)
+        # DNF requires a cache reset to make local repositories accessible.
+        if cmd == 'dnf'
+          on agent, "dnf clean metadata"
+        end
       end
     end
   end

@@ -114,7 +114,7 @@ describe "Puppet resource expressions" do
 
     fails( "define a::b { notify { testing: } } 'a::b' { title: }" => /Illegal Resource Type expression.*got String/)
 
-    fails( "Does::Not::Exist { title: }" => /Invalid resource type does::not::exist/)
+    fails( "Does::Not::Exist { title: }" => /Resource type not found: Does::Not::Exist/)
   end
 
   context "local defaults" do
@@ -164,15 +164,18 @@ describe "Puppet resource expressions" do
              path => '/somewhere',
              * => $y }"  => "File[$t][mode] == '0666' and File[$t][owner] == 'the_x' and File[$t][path] == '/somewhere'")
 
-    fails("notify { title: unknown => value }" => /Invalid parameter: 'unknown'/)
+    produces("notify{title:}; Notify[title] { * => { message => set}}" => "Notify[title][message] == 'set'")
+    produces("Notify { * => { message => set}}; notify{title:}"      => "Notify[title][message] == 'set'")
+
+    fails("notify { title: unknown => value }" => /no parameter named 'unknown'/)
 
     # this really needs to be a better error message.
-    fails("notify { title: * => { hash => value }, message => oops }" => /Invalid parameter: 'hash'/)
+    fails("notify { title: * => { hash => value }, message => oops }" => /no parameter named 'hash'/)
 
     # should this be a better error message?
-    fails("notify { title: message => oops, * => { hash => value } }" => /Invalid parameter: 'hash'/)
+    fails("notify { title: message => oops, * => { hash => value } }" => /no parameter named 'hash'/)
 
-    fails("notify { title: * => { unknown => value } }" => /Invalid parameter: 'unknown'/)
+    fails("notify { title: * => { unknown => value } }" => /no parameter named 'unknown'/)
     fails("
          $x = { mode => '0666' }
          $y = { owner => the_y }

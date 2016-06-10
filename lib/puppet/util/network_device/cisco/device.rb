@@ -47,7 +47,13 @@ class Puppet::Util::NetworkDevice::Cisco::Device < Puppet::Util::NetworkDevice::
   end
 
   def execute(cmd)
-    transport.command(cmd)
+    transport.command(cmd) do |out|
+      if out =~ /^%/mo or out =~ /^Command rejected:/mo
+        # strip off the command just sent
+        error = out.sub(cmd,'')
+        Puppet.err "Error while executing '#{cmd}', device returned: #{error}"
+      end
+    end
   end
 
   def login
@@ -209,6 +215,12 @@ class Puppet::Util::NetworkDevice::Cisco::Device < Puppet::Util::NetworkDevice::
       return
     end
 
+    # Cisco VLANs are supposed to be alphanumeric only
+    if should[:description] =~ /[^\w]/
+      Puppet.err "Invalid VLAN name '#{should[:description]}' for Cisco device.\nVLAN name must be alphanumeric, no spaces or special characters."
+      return
+    end
+    
     # We're creating or updating an entry
     execute("conf t")
     execute("vlan #{id}")
@@ -234,20 +246,26 @@ class Puppet::Util::NetworkDevice::Cisco::Device < Puppet::Util::NetworkDevice::
           trunking[:mode] = :trunk
         when "static access"
           trunking[:mode] = :access
+        when "dynamic auto"
+          trunking[:mode] = 'dynamic auto'
+        when "dynamic desirable"
+          trunking[:mode] = 'dynamic desirable'
         else
           raise "Unknown switchport mode: #{$1} for #{interface}"
         end
       when /^Administrative Trunking Encapsulation:\s+(.*)$/
         case $1
         when "dot1q","isl"
-          trunking[:encapsulation] = $1.to_sym if trunking[:mode] == :trunk
+          trunking[:encapsulation] = $1.to_sym if trunking[:mode] != :access
+        when "negotiate"
+          trunking[:encapsulation] = :negotiate
         else
           raise "Unknown switchport encapsulation: #{$1} for #{interface}"
         end
-      when /^Access Mode VLAN:\s+(.*) \(\(Inactive\)\)$/
-        # nothing
-      when /^Access Mode VLAN:\s+(.*) \(.*\)$/
-        trunking[:native_vlan] = $1 if trunking[:mode] == :access
+      when /^Access Mode VLAN:\s+(.*) \((.*)\)$/
+        trunking[:access_vlan] = $1 if $2 != '(Inactive)'
+      when /^Trunking Native Mode VLAN:\s+(.*) \(.*\)$/
+        trunking[:native_vlan] = $1
       when /^Trunking VLANs Enabled:\s+(.*)$/
         next if trunking[:mode] == :access
         vlans = $1

@@ -3,6 +3,7 @@ require 'getoptlong'
 require 'puppet/util/watched_file'
 require 'puppet/util/command_line/puppet_option_parser'
 require 'forwardable'
+require 'fileutils'
 
 # The class for handling configuration files.
 class Puppet::Settings
@@ -13,6 +14,7 @@ class Puppet::Settings
   require 'puppet/settings/base_setting'
   require 'puppet/settings/string_setting'
   require 'puppet/settings/enum_setting'
+  require 'puppet/settings/symbolic_enum_setting'
   require 'puppet/settings/array_setting'
   require 'puppet/settings/file_setting'
   require 'puppet/settings/directory_setting'
@@ -338,8 +340,26 @@ class Puppet::Settings
     call_hooks_deferred_to_application_initialization
     issue_deprecations
 
+    REQUIRED_APP_SETTINGS.each do |key|
+      create_ancestors(Puppet[key])
+    end
+
     @app_defaults_initialized = true
   end
+
+  # Create ancestor directories.
+  #
+  # @param dir [String] absolute path for a required application default directory
+  # @api private
+
+  def create_ancestors(dir)
+    parent_dir = File.dirname(dir)
+
+    if !File.exist?(parent_dir)
+      FileUtils.mkdir_p(parent_dir)
+    end
+  end
+  private :create_ancestors
 
   def call_hooks_deferred_to_application_initialization(options = {})
     @hooks_to_call_on_application_initialization.each do |setting|
@@ -542,7 +562,7 @@ class Puppet::Settings
           # will have associated hooks that it ends up being less work this
           # way overall.
           if setting.call_hook_on_initialize?
-            @hooks_to_call_on_application_initialization << setting
+            @hooks_to_call_on_application_initialization |= [ setting ]
           else
             setting.handle(ChainedValues.new(
               preferred_run_mode,
@@ -644,6 +664,7 @@ class Puppet::Settings
       :ttl        => TTLSetting,
       :array      => ArraySetting,
       :enum       => EnumSetting,
+      :symbolic_enum   => SymbolicEnumSetting,
       :priority   => PrioritySetting,
       :autosign   => AutosignSetting,
   }
@@ -730,13 +751,13 @@ class Puppet::Settings
 
   class SearchPathElement < Struct.new(:name, :type); end
 
-  # The order in which to search for values.
+  # The order in which to search for values, without defaults.
   #
   # @param environment [String,Symbol] symbolic reference to an environment name
   # @param run_mode [Symbol] symbolic reference to a Puppet run mode
   # @return [Array<SearchPathElement>]
   # @api private
-  def searchpath(environment = nil, run_mode = preferred_run_mode)
+  def configsearchpath(environment = nil, run_mode = preferred_run_mode)
     searchpath = [
       SearchPathElement.new(:memory, :values),
       SearchPathElement.new(:cli, :values),
@@ -744,6 +765,16 @@ class Puppet::Settings
     searchpath << SearchPathElement.new(environment.intern, :environment) if environment
     searchpath << SearchPathElement.new(run_mode, :section) if run_mode
     searchpath << SearchPathElement.new(:main, :section)
+  end
+
+  # The order in which to search for values.
+  #
+  # @param environment [String,Symbol] symbolic reference to an environment name
+  # @param run_mode [Symbol] symbolic reference to a Puppet run mode
+  # @return [Array<SearchPathElement>]
+  # @api private
+  def searchpath(environment = nil, run_mode = preferred_run_mode)
+    searchpath = configsearchpath(environment, run_mode)
     searchpath << SearchPathElement.new(:application_defaults, :values)
     searchpath << SearchPathElement.new(:overridden_defaults, :values)
   end
@@ -778,6 +809,34 @@ class Puppet::Settings
   def set_by_cli?(param)
     param = param.to_sym
     !@value_sets[:cli].lookup(param).nil?
+  end
+
+  # Get values from a search path entry.
+  # @api private
+  def searchpath_values(source)
+    case source.type
+    when :values
+      @value_sets[source.name]
+    when :section
+      if @configuration_file && section = @configuration_file.sections[source.name]
+        ValuesFromSection.new(source.name, section)
+      end
+    when :environment
+      ValuesFromEnvironmentConf.new(source.name)
+    else
+      raise(Puppet::DevError, "Unknown searchpath case: #{source.type} for the #{source} settings path element.")
+    end
+  end
+
+  # Allow later inspection to determine if the setting was set by user
+  # config, rather than a default setting.
+  def set_by_config?(param, environment = nil, run_mode = preferred_run_mode)
+    param = param.to_sym
+    configsearchpath(environment, run_mode).any? do |source|
+      if vals = searchpath_values(source)
+        vals.lookup(param)
+      end
+    end
   end
 
   # Patches the value for a param in a section.
@@ -849,7 +908,7 @@ class Puppet::Settings
         if tryconfig.call_hook_on_define?
           call << tryconfig
         elsif tryconfig.call_hook_on_initialize?
-          @hooks_to_call_on_application_initialization << tryconfig
+          @hooks_to_call_on_application_initialization |= [ tryconfig ]
         end
       end
 
@@ -927,6 +986,8 @@ Generated on #{Time.now}.
     sections = sections.reject { |s| @used.include?(s) }
 
     return if sections.empty?
+
+    Puppet.debug("Applying settings catalog for sections #{sections.join(', ')}")
 
     begin
       catalog = to_catalog(*sections).to_ral
@@ -1014,11 +1075,11 @@ Generated on #{Time.now}.
   #    --config)
   # 2. If we're running as a root process, use the system puppet.conf
   #    (usually /etc/puppetlabs/puppet/puppet.conf)
-  # 3. Otherwise, use the user puppet.conf (usually ~/.puppet/puppet.conf)
+  # 3. Otherwise, use the user puppet.conf (usually ~/.puppetlabs/etc/puppet/puppet.conf)
   #
   # @api private
   # @todo this code duplicates {Puppet::Util::RunMode#which_dir} as described
-  #   in {http://projects.puppetlabs.com/issues/16637 #16637}
+  #   in {https://projects.puppetlabs.com/issues/16637 #16637}
   def which_configuration_file
     if explicit_config_file? or Puppet.features.root? then
       return main_config_file
@@ -1124,26 +1185,13 @@ Generated on #{Time.now}.
 
   # Yield each search source in turn.
   def value_sets_for(environment, mode)
-    searchpath(environment, mode).collect do |source|
-      case source.type
-      when :values
-        @value_sets[source.name]
-      when :section
-        if @configuration_file && section = @configuration_file.sections[source.name]
-          ValuesFromSection.new(source.name, section)
-        end
-      when :environment
-        ValuesFromEnvironmentConf.new(source.name)
-      else
-        raise(Puppet::DevError, "Unknown searchpath case: #{source.type} for the #{source} settings path element.")
-      end
-    end.compact
+    searchpath(environment, mode).collect { |source| searchpath_values(source) }.compact
   end
 
   # Read the file in.
   # @api private
   def read_file(file)
-    return Puppet::FileSystem.read(file)
+    return Puppet::FileSystem.read(file, :encoding => 'utf-8')
   end
 
   # Private method for internal test use only; allows to do a comprehensive clear of all settings between tests.

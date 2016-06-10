@@ -13,6 +13,7 @@ require 'puppet/ssl'
 # -- privateExtensions can be extended by enterprises to suit their own needs
 # registeredExtensions OBJECT IDENTIFIER ::= { puppetCertExtensions 1 }
 # privateExtensions OBJECT IDENTIFIER ::= { puppetCertExtensions 2 }
+# authorizationExtensions OBJECT IDENTIFIER ::= { puppetCertExtensions 3 }
 #
 # -- subtree of common registered extensions
 # -- The short names for these OIDs are intentionally lowercased and formatted
@@ -48,8 +49,21 @@ module Puppet::SSL::Oids
     ["1.3.6.1.4.1.34380.1.1.15", 'pp_department', 'Puppet Node Department Name'],
     ["1.3.6.1.4.1.34380.1.1.16", 'pp_cluster', 'Puppet Node Cluster Name'],
     ["1.3.6.1.4.1.34380.1.1.17", 'pp_provisioner', 'Puppet Node Provisioner Name'],
-    
+    ["1.3.6.1.4.1.34380.1.1.18", 'pp_region', 'Puppet Node Region Name'],
+    ["1.3.6.1.4.1.34380.1.1.19", 'pp_datacenter', 'Puppet Node Datacenter Name'],
+    ["1.3.6.1.4.1.34380.1.1.20", 'pp_zone', 'Puppet Node Zone Name'],
+    ["1.3.6.1.4.1.34380.1.1.21", 'pp_network', 'Puppet Node Network Name'],
+    ["1.3.6.1.4.1.34380.1.1.22", 'pp_securitypolicy', 'Puppet Node Security Policy Name'],
+    ["1.3.6.1.4.1.34380.1.1.23", 'pp_cloudplatform', 'Puppet Node Cloud Platform Name'],
+    ["1.3.6.1.4.1.34380.1.1.24", 'pp_apptier', 'Puppet Node Application Tier'],
+    ["1.3.6.1.4.1.34380.1.1.25", 'pp_hostname', 'Puppet Node Hostname'],
+
     ["1.3.6.1.4.1.34380.1.2", 'ppPrivCertExt', 'Puppet Private Certificate Extension'],
+
+    ["1.3.6.1.4.1.34380.1.3", 'ppAuthCertExt', 'Puppet Certificate Authorization Extension'],
+
+    ["1.3.6.1.4.1.34380.1.3.1",  'pp_authorization', 'Certificate Extension Authorization'],
+    ["1.3.6.1.4.1.34380.1.3.13", 'pp_auth_role', 'Puppet Node Role Name for Authorization'],
   ]
 
   # Register our custom Puppet OIDs with OpenSSL so they can be used as CSR
@@ -61,7 +75,7 @@ module Puppet::SSL::Oids
     end
   end
 
-  # Parse and load custom OID mapping file that enables custom OIDs to be resolved
+  # Parse custom OID mapping file that enables custom OIDs to be resolved
   # into user-friendly names.
   #
   # @param custom_oid_file [String] File to obtain custom OIDs mapping from
@@ -76,7 +90,7 @@ module Puppet::SSL::Oids
   #  '1.3.6.1.4.1.34380.1.2.1.2':
   #    shortname: 'myothershortname'
   #    longname: 'Other Long name'
-  def self.load_custom_oid_file(custom_oid_file, map_key='oid_mapping')
+  def self.parse_custom_oid_file(custom_oid_file, map_key='oid_mapping')
     if File.exists?(custom_oid_file) && File.readable?(custom_oid_file)
       mapping = nil
       begin
@@ -102,6 +116,28 @@ module Puppet::SSL::Oids
         oid_defns << [oid, shortname, longname]
       end
 
+      oid_defns
+    end
+  end
+
+  # Load custom OID mapping file that enables custom OIDs to be resolved
+  # into user-friendly names.
+  #
+  # @param custom_oid_file [String] File to obtain custom OIDs mapping from
+  # @param map_key [String] Hash key in which custom OIDs mapping is stored
+  #
+  # @example Custom OID mapping file
+  # ---
+  # oid_mapping:
+  #  '1.3.6.1.4.1.34380.1.2.1.1':
+  #    shortname : 'myshortname'
+  #    longname  : 'Long name'
+  #  '1.3.6.1.4.1.34380.1.2.1.2':
+  #    shortname: 'myothershortname'
+  #    longname: 'Other Long name'
+  def self.load_custom_oid_file(custom_oid_file, map_key='oid_mapping')
+    oid_defns = parse_custom_oid_file(custom_oid_file, map_key)
+    unless oid_defns.nil?
       begin
         oid_defns.each do |oid_defn|
           OpenSSL::ASN1::ObjectId.register(*oid_defn)

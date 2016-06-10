@@ -169,6 +169,12 @@ describe Puppet::Settings::FileSetting do
       expect(resource.title).to eq(@basepath)
     end
 
+    it "should have a working directory with a root directory not called dev", :if => Puppet.features.microsoft_windows? do
+      # Although C:\Dev\.... is a valid path on Windows, some other code may regard it as a path to be ignored.  e.g. /dev/null resolves to C:\dev\null on Windows.
+      path = File.expand_path('somefile')
+      expect(path).to_not match(/^[A-Z]:\/dev/i)
+    end
+
     it "should fully qualified returned files if necessary (#795)" do
       @settings.stubs(:value).with(:myfile, nil, false).returns "myfile"
       path = File.expand_path('myfile')
@@ -293,6 +299,37 @@ describe Puppet::Settings::FileSetting do
     it 'does not expand the path of the special value :memory: so we can set dblocation to an in-memory database' do
       filesetting = FileSetting.new(:settings => mock("settings"), :desc => "eh")
       expect(filesetting.munge(':memory:')).to eq(':memory:')
+    end
+  end
+
+  context "when opening", :unless => Puppet.features.microsoft_windows? do
+    let(:path) do
+      tmpfile('file_setting_spec')
+    end
+
+    let(:setting) do
+      settings = mock("settings", :value => path)
+      FileSetting.new(:name => :mysetting, :desc => "creates a file", :settings => settings)
+    end
+
+    it "creates a file with mode 0640" do
+      setting.mode = '0640'
+
+      expect(File).to_not be_exist(path)
+      setting.open('w')
+
+      expect(File).to be_exist(path)
+      expect(Puppet::FileSystem.stat(path).mode & 0777).to eq(0640)
+    end
+
+    it "preserves the mode of an existing file" do
+      setting.mode = '0640'
+
+      Puppet::FileSystem.touch(path)
+      Puppet::FileSystem.chmod(0644, path)
+      setting.open('w')
+
+      expect(Puppet::FileSystem.stat(path).mode & 0777).to eq(0644)
     end
   end
 end

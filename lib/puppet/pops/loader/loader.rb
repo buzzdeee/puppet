@@ -19,7 +19,12 @@
 #
 # @api public
 #
-class Puppet::Pops::Loader::Loader
+module Puppet::Pops
+module Loader
+class Loader
+
+  # Describes the kinds of things that loaders can load
+  LOADABLE_KINDS = [:func_4x, :func_4xpp, :type_pp].freeze
 
   # Produces the value associated with the given name if already loaded, or available for loading
   # by this loader, one of its parents, or other loaders visible to this loader.
@@ -49,7 +54,19 @@ class Puppet::Pops::Loader::Loader
   # @api public
   #
   def load_typed(typed_name)
-    raise NotImplementedError.new
+    raise NotImplementedError, "Class #{self.class.name} must implement method #load_typed"
+  end
+
+  # Returns an already loaded entry if one exists, or nil. This does not trigger loading
+  # of the given type/name.
+  #
+  # @param typed_name [TypedName] - the type, name combination to lookup
+  # @param check_dependencies [Boolean] - if dependencies should be checked in additiona to here and parent
+  # @return [NamedEntry, nil] the entry containing the loaded value, or nil if not found
+  # @api public
+  #
+  def loaded_entry(typed_name, check_dependencies = false)
+    raise NotImplementedError, "Class #{self.class.name} must implement method #loaded_entry"
   end
 
   # Produces the value associated with the given name if defined **in this loader**, or nil if not defined.
@@ -79,7 +96,7 @@ class Puppet::Pops::Loader::Loader
   # @api private
   #
   def find(typed_name)
-    raise NotImplementedError.new
+    raise NotImplementedError, "Class #{self.class.name} must implement method #find"
   end
 
   # Returns the parent of the loader, or nil, if this is the top most loader. This implementation returns nil.
@@ -119,6 +136,14 @@ class Puppet::Pops::Loader::Loader
     raise NotImplementedError.new
   end
 
+  # A loader is by default a loader for all kinds of loadables. An implementation may override
+  # if it cannot load all kinds.
+  #
+  # @api private
+  def loadables
+    LOADABLE_KINDS
+  end
+
   # An entry for one entity loaded by the loader.
   #
   class NamedEntry
@@ -133,49 +158,6 @@ class Puppet::Pops::Loader::Loader
       freeze()
     end
   end
-
-  # A name/type combination that can be used as a compound hash key
-  #
-  class TypedName
-    DOUBLE_COLON = '::'
-
-    attr_reader :hash
-    attr_reader :type
-    attr_reader :name
-    attr_reader :name_parts
-    attr_reader :compound_name
-
-    def initialize(type, name)
-      @type = type
-      # relativize the name (get rid of leading ::), and make the split string available
-      parts = name.to_s.split(DOUBLE_COLON)
-      if parts[0].empty?
-        parts.shift
-        @name = name[2..-1]
-      else
-        @name = name
-      end
-      @name_parts = parts
-
-      # Use a frozen compound key for the hash and comparison
-      @compound_name = "#{type}/#{name}".freeze
-      @hash = @compound_name.hash
-      freeze
-    end
-
-    def ==(o)
-      o.class == self.class && o.compound_name == @compound_name
-    end
-
-    alias eql? ==
-
-    def qualified?
-      @name_parts.size > 1
-    end
-
-    def to_s
-      @compound_name
-    end
-  end
 end
-
+end
+end

@@ -10,6 +10,8 @@ module Puppet
   #
   # @api public
   module Pops
+    require 'semantic'
+
     require 'puppet/pops/patterns'
     require 'puppet/pops/utils'
 
@@ -27,18 +29,16 @@ module Puppet
     require 'puppet/pops/validation'
     require 'puppet/pops/issue_reporter'
     require 'puppet/pops/lookup'
+    require 'puppet/pops/lookup/interpolation'
+    require 'puppet/pops/lookup/invocation'
+    require 'puppet/pops/lookup/sub_lookup'
+    require 'puppet/pops/lookup/explainer'
 
     require 'puppet/pops/model/model'
 
     # (the Types module initializes itself)
     require 'puppet/pops/types/types'
-    require 'puppet/pops/types/type_asserter'
-    require 'puppet/pops/types/type_assertion_error'
-    require 'puppet/pops/types/type_calculator'
-    require 'puppet/pops/types/type_factory'
-    require 'puppet/pops/types/type_parser'
-    require 'puppet/pops/types/class_loader'
-    require 'puppet/pops/types/enumeration'
+    require 'puppet/pops/types/string_converter'
 
     require 'puppet/pops/merge_strategy'
 
@@ -81,6 +81,23 @@ module Puppet
       end
     end
 
+    module Evaluator
+      require 'puppet/pops/evaluator/literal_evaluator'
+      require 'puppet/pops/evaluator/callable_signature'
+      require 'puppet/pops/evaluator/runtime3_converter'
+      require 'puppet/pops/evaluator/runtime3_support'
+      require 'puppet/pops/evaluator/evaluator_impl'
+      require 'puppet/pops/evaluator/epp_evaluator'
+      require 'puppet/pops/evaluator/collector_transformer'
+      require 'puppet/pops/evaluator/puppet_proc'
+      module Collectors
+        require 'puppet/pops/evaluator/collectors/abstract_collector'
+        require 'puppet/pops/evaluator/collectors/fixed_set_collector'
+        require 'puppet/pops/evaluator/collectors/catalog_collector'
+        require 'puppet/pops/evaluator/collectors/exported_collector'
+      end
+    end
+
     module Parser
       require 'puppet/pops/parser/eparser'
       require 'puppet/pops/parser/parser_support'
@@ -97,23 +114,6 @@ module Puppet
       require 'puppet/pops/validation/validator_factory_4_0'
     end
 
-    module Evaluator
-      require 'puppet/pops/evaluator/callable_signature'
-      require 'puppet/pops/evaluator/runtime3_converter'
-      require 'puppet/pops/evaluator/runtime3_support'
-      require 'puppet/pops/evaluator/evaluator_impl'
-      require 'puppet/pops/evaluator/epp_evaluator'
-      require 'puppet/pops/evaluator/callable_mismatch_describer'
-      require 'puppet/pops/evaluator/collector_transformer'
-      require 'puppet/pops/evaluator/puppet_proc'
-      module Collectors
-        require 'puppet/pops/evaluator/collectors/abstract_collector'
-        require 'puppet/pops/evaluator/collectors/fixed_set_collector'
-        require 'puppet/pops/evaluator/collectors/catalog_collector'
-        require 'puppet/pops/evaluator/collectors/exported_collector'
-      end
-    end
-
     # Subsystem for puppet functions defined in ruby.
     #
     # @api public
@@ -122,10 +122,15 @@ module Puppet
       require 'puppet/pops/functions/dispatch'
       require 'puppet/pops/functions/dispatcher'
     end
+
+    module Migration
+      require 'puppet/pops/migration/migration_checker'
+    end
   end
 
   require 'puppet/parser/ast/pops_bridge'
   require 'puppet/bindings'
   require 'puppet/functions'
+  require 'puppet/loaders'
 end
 require 'puppet/plugins/data_providers'

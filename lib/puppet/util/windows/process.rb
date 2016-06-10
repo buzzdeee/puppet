@@ -224,6 +224,51 @@ module Puppet::Util::Windows::Process
   end
   module_function :windows_major_version
 
+  # Returns a hash of the current environment variables encoded as UTF-8
+  # The memory block returned from GetEnvironmentStringsW is double-null terminated and the vars are paired as below;
+  # Var1=Value1\0
+  # Var2=Value2\0
+  # VarX=ValueX\0\0
+  # Note - Some env variable names start with '=' and are excluded from the return value
+  # Note - The env_ptr MUST be freed using the FreeEnvironmentStringsW function
+  # Note - There is no technical limitation to the size of the environment block returned.
+  #   However a pracitcal limit of 64K is used as no single environment variable can exceed 32KB
+  def get_environment_strings
+    env_ptr = GetEnvironmentStringsW()
+
+    pairs = env_ptr.read_arbitrary_wide_string_up_to(65534, :double_null)
+      .split(?\x00)
+      .reject { |env_str| env_str.nil? || env_str.empty? || env_str[0] == '=' }
+      .map { |env_pair| env_pair.split('=', 2) }
+    Hash[ pairs ]
+  ensure
+    if env_ptr && ! env_ptr.null?
+      if FreeEnvironmentStringsW(env_ptr) == FFI::WIN32_FALSE
+        Puppet.debug "FreeEnvironmentStringsW memory leak"
+      end
+    end
+  end
+  module_function :get_environment_strings
+
+  def set_environment_variable(name, val)
+    raise Puppet::Util::Windows::Error('environment variable name must not be nil or empty') if ! name || name.empty?
+
+    FFI::MemoryPointer.from_string_to_wide_string(name) do |name_ptr|
+      if (val.nil?)
+        if SetEnvironmentVariableW(name_ptr, FFI::MemoryPointer::NULL) == FFI::WIN32_FALSE
+          raise Puppet::Util::Windows::Error.new("Failed to remove environment variable: #{name}")
+        end
+      else
+        FFI::MemoryPointer.from_string_to_wide_string(val) do |val_ptr|
+          if SetEnvironmentVariableW(name_ptr, val_ptr) == FFI::WIN32_FALSE
+            raise Puppet::Util::Windows::Error.new("Failed to set environment variable: #{name}")
+          end
+        end
+      end
+    end
+  end
+  module_function :set_environment_variable
+
   # Returns whether or not the OS has the ability to set elevated
   # token information.
   #
@@ -243,7 +288,7 @@ module Puppet::Util::Windows::Process
 
   ffi_convention :stdcall
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms687032(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms687032(v=vs.85).aspx
   # DWORD WINAPI WaitForSingleObject(
   #   _In_  HANDLE hHandle,
   #   _In_  DWORD dwMilliseconds
@@ -252,7 +297,7 @@ module Puppet::Util::Windows::Process
   attach_function_private :WaitForSingleObject,
     [:handle, :dword], :dword
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms683189(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms683189(v=vs.85).aspx
   # BOOL WINAPI GetExitCodeProcess(
   #   _In_   HANDLE hProcess,
   #   _Out_  LPDWORD lpExitCode
@@ -261,12 +306,34 @@ module Puppet::Util::Windows::Process
   attach_function_private :GetExitCodeProcess,
     [:handle, :lpdword], :win32_bool
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/ms683179(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms683179(v=vs.85).aspx
   # HANDLE WINAPI GetCurrentProcess(void);
   ffi_lib :kernel32
   attach_function_private :GetCurrentProcess, [], :handle
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379295(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms683187(v=vs.85).aspx
+  # LPTCH GetEnvironmentStrings(void);
+  ffi_lib :kernel32
+  attach_function_private :GetEnvironmentStringsW, [], :pointer
+
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms683151(v=vs.85).aspx
+  # BOOL FreeEnvironmentStrings(
+  #   _In_ LPTCH lpszEnvironmentBlock
+  # );
+  ffi_lib :kernel32
+  attach_function_private :FreeEnvironmentStringsW,
+    [:pointer], :win32_bool
+
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/ms686206(v=vs.85).aspx
+  # BOOL WINAPI SetEnvironmentVariableW(
+  #     _In_     LPCTSTR lpName,
+  #     _In_opt_ LPCTSTR lpValue
+  #   );
+  ffi_lib :kernel32
+  attach_function_private :SetEnvironmentVariableW,
+    [:lpcwstr, :lpcwstr], :win32_bool
+
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa379295(v=vs.85).aspx
   # BOOL WINAPI OpenProcessToken(
   #   _In_   HANDLE ProcessHandle,
   #   _In_   DWORD DesiredAccess,
@@ -277,7 +344,7 @@ module Puppet::Util::Windows::Process
     [:handle, :dword, :phandle], :win32_bool
 
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379261(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa379261(v=vs.85).aspx
   # typedef struct _LUID {
   #   DWORD LowPart;
   #   LONG  HighPart;
@@ -287,7 +354,7 @@ module Puppet::Util::Windows::Process
            :HighPart, :win32_long
   end
 
-  # http://msdn.microsoft.com/en-us/library/Windows/desktop/aa379180(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/Windows/desktop/aa379180(v=vs.85).aspx
   # BOOL WINAPI LookupPrivilegeValue(
   #   _In_opt_  LPCTSTR lpSystemName,
   #   _In_      LPCTSTR lpName,
@@ -297,7 +364,7 @@ module Puppet::Util::Windows::Process
   attach_function_private :LookupPrivilegeValueW,
     [:lpcwstr, :lpcwstr, :pointer], :win32_bool
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379626(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa379626(v=vs.85).aspx
   TOKEN_INFORMATION_CLASS = enum(
       :TokenUser, 1,
       :TokenGroups,
@@ -342,7 +409,7 @@ module Puppet::Util::Windows::Process
       :MaxTokenInfoClass
   )
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379263(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa379263(v=vs.85).aspx
   # typedef struct _LUID_AND_ATTRIBUTES {
   #   LUID  Luid;
   #   DWORD Attributes;
@@ -352,7 +419,7 @@ module Puppet::Util::Windows::Process
            :Attributes, :dword
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa379630(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa379630(v=vs.85).aspx
   # typedef struct _TOKEN_PRIVILEGES {
   #   DWORD               PrivilegeCount;
   #   LUID_AND_ATTRIBUTES Privileges[ANYSIZE_ARRAY];
@@ -362,7 +429,7 @@ module Puppet::Util::Windows::Process
            :Privileges, [LUID_AND_ATTRIBUTES, 1]    # placeholder for offset
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/bb530717(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/bb530717(v=vs.85).aspx
   # typedef struct _TOKEN_ELEVATION {
   #   DWORD TokenIsElevated;
   # } TOKEN_ELEVATION, *PTOKEN_ELEVATION;
@@ -370,7 +437,7 @@ module Puppet::Util::Windows::Process
     layout :TokenIsElevated, :dword
   end
 
-  # http://msdn.microsoft.com/en-us/library/windows/desktop/aa446671(v=vs.85).aspx
+  # https://msdn.microsoft.com/en-us/library/windows/desktop/aa446671(v=vs.85).aspx
   # BOOL WINAPI GetTokenInformation(
   #   _In_       HANDLE TokenHandle,
   #   _In_       TOKEN_INFORMATION_CLASS TokenInformationClass,

@@ -1,11 +1,11 @@
 Report
 ======
 This document describes the Puppet master's report endpoint and the schema for
-Report Format 4 in technical term. Also see the
-[documentation](http://docs.puppetlabs.com/puppet/latest/reference/format_report.html).
+Report Format 6 in technical term. Also see the
+[documentation](https://docs.puppetlabs.com/puppet/latest/reference/format_report.html).
 
 The `report` endpoint allows clients to send reports to the master via `http`
-or `https`.  Once received by the master they are processed by the *report
+or `https`. Once received by the master they are processed by the *report
 processors* configured to be triggered when a report is received. As an
 example, storing reports in PuppetDB is handled by one such report processor.
 
@@ -51,10 +51,14 @@ example is formatted for readability)
      "time"=>"2013-09-12T03:50:59.009301000+02:00",
      "configuration_version"=>1357986,
      "transaction_uuid"=>"df34516e-4050-402d-a166-05b03b940749",
-     "report_format"=>4,
+     "code_id"=>null,
+     "catalog_uuid"=>"827a74c8-cf98-44da-9ff7-18c5e4bee41e",
+     "catalog_format"=>1,
+     "report_format"=>5,
      "puppet_version"=>"3.3.0",
      "kind"=>"apply",
      "status"=>"unchanged",
+     "noop"=>false,
      "environment"=>"test_environment",
      "logs"=>
       [{"level"=>"warning",
@@ -107,10 +111,11 @@ example is formatted for readability)
          "skipped"=>false,
          "change_count"=>0,
          "out_of_sync_count"=>0,
-         "events"=>[]}}}
+         "events"=>[]}},
+      "cached_catalog_status"=> "not_used"}
 
 Schema
 ------
 
-The sent report objects must conform to the schema at
-[api/schemas/report.json](../schemas/report.json).
+The sent report objects must conform to
+[the report schema.](../schemas/report.json)

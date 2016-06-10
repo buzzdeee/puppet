@@ -39,7 +39,7 @@ describe Puppet::Type.type(:service).provider(:init) do
     before :each do
       described_class.stubs(:defpath).returns('tmp')
 
-      @services = ['one', 'two', 'three', 'four']
+      @services = ['one', 'two', 'three', 'four', 'umountfs']
       Dir.stubs(:entries).with('tmp').returns @services
       FileTest.expects(:directory?).with('tmp').returns(true)
       FileTest.stubs(:executable?).returns(true)
@@ -57,6 +57,16 @@ describe Puppet::Type.type(:service).provider(:init) do
     it "should omit a single service from the exclude list" do
       exclude = 'two'
       expect(described_class.get_services(described_class.defpath, exclude).map(&:name)).to eq(@services - [exclude])
+    end
+
+    it "should omit Yocto services on cisco-wrlinux" do
+      Facter.stubs(:value).with(:osfamily).returns 'cisco-wrlinux'
+      exclude = 'umountfs'
+      expect(described_class.get_services(described_class.defpath).map(&:name)).to eq(@services - [exclude])
+    end
+
+    it "should not omit Yocto services on non cisco-wrlinux platforms" do
+      expect(described_class.get_services(described_class.defpath).map(&:name)).to eq(@services)
     end
 
     it "should use defpath" do
@@ -147,10 +157,14 @@ describe Puppet::Type.type(:service).provider(:init) do
         expect(provider).to respond_to(method)
       end
       describe "when running #{method}" do
+        before :each do
+          $CHILD_STATUS.stubs(:exitstatus).returns(0)
+        end
 
         it "should use any provided explicit command" do
           resource[method] = "/user/specified/command"
           provider.expects(:execute).with { |command, *args| command == ["/user/specified/command"] }
+
           provider.send(method)
         end
 
@@ -158,6 +172,7 @@ describe Puppet::Type.type(:service).provider(:init) do
           resource[:hasrestart] = :true
           resource[:hasstatus] = :true
           provider.expects(:execute).with { |command, *args| command ==  ["/service/path/myservice",method]}
+
           provider.send(method)
         end
       end
@@ -170,6 +185,7 @@ describe Puppet::Type.type(:service).provider(:init) do
         end
         it "should execute the command" do
           provider.expects(:texecute).with(:status, ['/service/path/myservice', :status], false).returns("")
+          $CHILD_STATUS.stubs(:exitstatus).returns(0)
           provider.status
         end
         it "should consider the process running if the command returns 0" do
@@ -211,6 +227,24 @@ describe Puppet::Type.type(:service).provider(:init) do
         provider.expects(:texecute).with(:start,['/service/path/myservice', :start], true).returns("")
         $CHILD_STATUS.stubs(:exitstatus).returns(0)
         provider.restart
+      end
+    end
+
+    describe "when starting a service on Solaris" do
+      it "should use ctrun" do
+        Facter.stubs(:value).with(:osfamily).returns 'Solaris'
+        provider.expects(:execute).with('/usr/bin/ctrun -l none /service/path/myservice start', {:failonfail => true, :override_locale => false, :squelch => false, :combine => true}).returns("")
+        $CHILD_STATUS.stubs(:exitstatus).returns(0)
+        provider.start
+      end
+    end
+
+    describe "when starting a service on RedHat" do
+      it "should not use ctrun" do
+        Facter.stubs(:value).with(:osfamily).returns 'RedHat'
+        provider.expects(:execute).with(['/service/path/myservice', :start], {:failonfail => true, :override_locale => false, :squelch => false, :combine => true}).returns("")
+        $CHILD_STATUS.stubs(:exitstatus).returns(0)
+        provider.start
       end
     end
   end

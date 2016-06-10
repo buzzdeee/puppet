@@ -21,24 +21,118 @@ module Util
   require 'puppet/util/posix'
   extend Puppet::Util::POSIX
 
+  # Can't use Puppet.features.microsoft_windows? as it may be mocked out in a test.  This can cause test recurring test failures
+  require 'puppet/util/windows/process' if Puppet::Util::Platform.windows?
+
   extend Puppet::Util::SymbolicFileMode
+
+  def default_env
+    Puppet.features.microsoft_windows? ?
+      :windows :
+      :posix
+  end
+  module_function :default_env
+
+  # @param name [String] The name of the environment variable to retrieve
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @return [String] Value of the specified environment variable.  nil if it does not exist
+  # @api private
+  def get_env(name, mode = default_env)
+    if mode == :windows
+      Puppet::Util::Windows::Process.get_environment_strings.each do |key, value |
+        if name.casecmp(key) == 0 then
+          return value
+        end
+      end
+      return nil
+    else
+      ENV[name]
+    end
+  end
+  module_function :get_env
+
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @return [Hash] A hashtable of all environment variables
+  # @api private
+  def get_environment(mode = default_env)
+    case mode
+      when :posix
+        ENV.to_hash
+      when :windows
+        Puppet::Util::Windows::Process.get_environment_strings
+      else
+        raise "Unable to retrieve the environment for mode #{mode}"
+    end
+  end
+  module_function :get_environment
+
+  # Removes all environment variables
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def clear_environment(mode = default_env)
+    case mode
+      when :posix
+        ENV.clear
+      when :windows
+        Puppet::Util::Windows::Process.get_environment_strings.each do |key, _|
+          Puppet::Util::Windows::Process.set_environment_variable(key, nil)
+        end
+      else
+        raise "Unable to clear the environment for mode #{mode}"
+    end
+  end
+  module_function :clear_environment
+
+  # @param name [String] The name of the environment variable to set
+  # @param value [String] The value to set the variable to.  nil deletes the environment variable
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def set_env(name, value = nil, mode = default_env)
+    case mode
+      when :posix
+        ENV[name] = value
+      when :windows
+        Puppet::Util::Windows::Process.set_environment_variable(name,value)
+      else
+        raise "Unable to set the environment variable #{name} for mode #{mode}"
+    end
+  end
+  module_function :set_env
+
+  # @param name [Hash] Environment variables to merge into the existing environment.  nil values will remove the variable
+  # @param mode [Symbol] Which operating system mode to use e.g. :posix or :windows.  Use nil to autodetect
+  # @api private
+  def merge_environment(env_hash, mode = default_env)
+    case mode
+      when :posix
+        env_hash.each { |name, val| ENV[name.to_s] = val }
+      when :windows
+        env_hash.each do |name, val|
+          Puppet::Util::Windows::Process.set_environment_variable(name.to_s, val)
+        end
+      else
+        raise "Unable to merge given values into the current environment for mode #{mode}"
+    end
+  end
+  module_function :merge_environment
 
   # Run some code with a specific environment.  Resets the environment back to
   # what it was at the end of the code.
-  def self.withenv(hash)
-    saved = ENV.to_hash
-    hash.each do |name, val|
-      ENV[name.to_s] = val
-    end
-
+  # Windows can store unicode chars in the environment as keys or values, but
+  # Rubys ENV tries to roundtrip them through the local codepage, which can
+  # cause encoding problems - underlying helpers use Windows APIs on Windows
+  # see https://bugs.ruby-lang.org/issues/8822
+  def withenv(hash, mode = :posix)
+    saved = get_environment(mode)
+    merge_environment(hash, mode)
     yield
   ensure
-    ENV.clear
-    saved.each do |name, val|
-      ENV[name] = val
+    if saved
+      clear_environment(mode)
+      merge_environment(saved, mode)
     end
   end
-
+  module_function :withenv
 
   # Execute a given chunk of code with a new umask.
   def self.withumask(mask)
@@ -147,14 +241,16 @@ module Util
     if absolute_path?(bin)
       return bin if FileTest.file? bin and FileTest.executable? bin
     else
-      ENV['PATH'].split(File::PATH_SEPARATOR).each do |dir|
+      exts = Puppet::Util.get_env('PATHEXT')
+      exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
+      Puppet::Util.get_env('PATH').split(File::PATH_SEPARATOR).each do |dir|
         begin
           dest = File.expand_path(File.join(dir, bin))
         rescue ArgumentError => e
           # if the user's PATH contains a literal tilde (~) character and HOME is not set, we may get
           # an ArgumentError here.  Let's check to see if that is the case; if not, re-raise whatever error
           # was thrown.
-          if e.to_s =~ /HOME/ and (ENV['HOME'].nil? || ENV['HOME'] == "")
+          if e.to_s =~ /HOME/ and (Puppet::Util.get_env('HOME').nil? || Puppet::Util.get_env('HOME') == "")
             # if we get here they have a tilde in their PATH.  We'll issue a single warning about this and then
             # ignore this path element and carry on with our lives.
             Puppet::Util::Warnings.warnonce("PATH contains a ~ character, and HOME is not set; ignoring PATH element '#{dir}'.")
@@ -166,8 +262,6 @@ module Util
           end
         else
           if Puppet.features.microsoft_windows? && File.extname(dest).empty?
-            exts = ENV['PATHEXT']
-            exts = exts ? exts.split(File::PATH_SEPARATOR) : %w[.COM .EXE .BAT .CMD]
             exts.each do |ext|
               destext = File.expand_path(dest + ext)
               return destext if FileTest.file? destext and FileTest.executable? destext
@@ -260,7 +354,15 @@ module Util
       $stdout.reopen(stdout)
       $stderr.reopen(stderr)
 
-      3.upto(256){|fd| IO::new(fd).close rescue nil}
+      begin
+        Dir.foreach('/proc/self/fd') do |f|
+          if f != '.' && f != '..' && f.to_i >= 3
+            IO::new(f.to_i).close rescue nil
+          end
+        end
+      rescue Errno::ENOENT # /proc/self/fd not found
+        3.upto(256){|fd| IO::new(fd).close rescue nil}
+      end
 
       block.call if block
     end
@@ -454,16 +556,14 @@ module Util
   module_function :exit_on_fail
 
   def deterministic_rand(seed,max)
-    if defined?(Random) == 'constant' && Random.class == Class
-      Random.new(seed).rand(max).to_s
-    else
-      srand(seed)
-      result = rand(max).to_s
-      srand()
-      result
-    end
+    deterministic_rand_int(seed, max).to_s
   end
   module_function :deterministic_rand
+
+  def deterministic_rand_int(seed,max)
+    Random.new(seed).rand(max)
+  end
+  module_function :deterministic_rand_int
 end
 end
 

@@ -5,6 +5,18 @@ require 'puppet/util/platform'
 describe "Puppet::FileSystem" do
   include PuppetSpec::Files
 
+  def with_file_content(content)
+    path = tmpfile('file-system')
+    file = File.new(path, 'wb')
+    file.sync = true
+    file.print content
+
+    yield path
+
+  ensure
+    file.close
+  end
+
   context "#exclusive_open" do
     it "opens ands allows updating of an existing file" do
       file = file_containing("file_to_update", "the contents")
@@ -96,6 +108,58 @@ describe "Puppet::FileSystem" do
     end
   end
 
+  context "read_preserve_line_endings" do
+    it "should read a file with line feed" do
+      with_file_content("file content \n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \n")
+      end
+    end
+
+    it "should read a file with carriage return line feed" do
+      with_file_content("file content \r\n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \r\n")
+      end
+    end
+
+    it "should read a mixed file using only the first line newline when lf" do
+      with_file_content("file content \nsecond line \r\n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \nsecond line \r\n")
+      end
+    end
+
+    it "should read a mixed file using only the first line newline when crlf" do
+      with_file_content("file content \r\nsecond line \n") do |file|
+        expect(Puppet::FileSystem.read_preserve_line_endings(file)).to eq("file content \r\nsecond line \n")
+      end
+    end
+  end
+
+  context "read should allow an encoding to be specified" do
+    # First line of Rune version of Rune poem at http://www.columbia.edu/~fdc/utf8/
+    # characters chosen since they will not parse on Windows with codepage 437 or 1252
+    # Section 3.2.1.3 of Ruby spec guarantees that \u strings are encoded as UTF-8
+    let (:rune_utf8) { "\u16A0\u16C7\u16BB" } # 'ᚠᛇᚻ'
+
+    it "and should read a UTF8 file properly" do
+      temp_file = file_containing('utf8.txt', rune_utf8)
+
+      contents = Puppet::FileSystem.read(temp_file, :encoding => 'utf-8')
+
+      expect(contents.encoding).to eq(Encoding::UTF_8)
+      expect(contents).to eq(rune_utf8)
+    end
+
+    it "does not strip the UTF8 BOM (Byte Order Mark) if present in a file" do
+      bom = "\uFEFF"
+
+      temp_file = file_containing('utf8bom.txt', "#{bom}#{rune_utf8}")
+      contents = Puppet::FileSystem.read(temp_file, :encoding => 'utf-8')
+
+      expect(contents.encoding).to eq(Encoding::UTF_8)
+      expect(contents).to eq("#{bom}#{rune_utf8}")
+    end
+  end
+
   describe "symlink",
     :if => ! Puppet.features.manages_symlinks? &&
     Puppet.features.microsoft_windows? do
@@ -177,6 +241,67 @@ describe "Puppet::FileSystem" do
         expect(Puppet::FileSystem.exist?(target)).to be_truthy
         expect(Puppet::FileSystem.exist?(symlink)).to be_truthy
       end
+    end
+
+    it "should return false for exist? when resolving a cyclic symlink chain" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      # yank file, temporarily dangle
+      ::File.delete(file)
+
+      # and trash it so that we can recreate it OK on windows
+      Puppet::FileSystem.unlink(symlink)
+
+      # point symlink -> symlink3 to create a cycle
+      Puppet::FileSystem.symlink(symlink3, symlink)
+
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_falsey
+    end
+
+    it "should return true for exist? when resolving a symlink chain pointing to a file" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_truthy
+    end
+
+    it "should return false for exist? when resolving a symlink chain that dangles" do
+      # point symlink -> file
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+
+      # point symlink2 -> symlink
+      symlink2 = tmpfile("somefile_link2")
+      Puppet::FileSystem.symlink(symlink, symlink2)
+
+      # point symlink3 -> symlink2
+      symlink3 = tmpfile("somefile_link3")
+      Puppet::FileSystem.symlink(symlink2, symlink3)
+
+      # yank file, and make symlink dangle
+      ::File.delete(file)
+
+      # symlink3 is now indirectly dangled
+      expect(Puppet::FileSystem.exist?(symlink3)).to be_falsey
     end
 
     it "should not create a symlink when the :noop option is specified" do
@@ -406,6 +531,26 @@ describe "Puppet::FileSystem" do
 
       expect(Puppet::FileSystem.exist?(missing_file)).to be_falsey
       expect(Puppet::FileSystem.readlink(symlink)).to eq(missing_file.to_s)
+    end
+
+    it "should be able to unlink a dangling symlink pointed at a file" do
+      symlink = tmpfile("somefile_link")
+      Puppet::FileSystem.symlink(file, symlink)
+      ::File.delete(file)
+      Puppet::FileSystem.unlink(symlink)
+
+      expect(Puppet::FileSystem).to_not be_exist(file)
+      expect(Puppet::FileSystem).to_not be_exist(symlink)
+    end
+
+    it "should be able to unlink a dangling symlink pointed at a directory" do
+      symlink = tmpfile("somedir_link")
+      Puppet::FileSystem.symlink(dir, symlink)
+      Dir.rmdir(dir)
+      Puppet::FileSystem.unlink(symlink)
+
+      expect(Puppet::FileSystem).to_not be_exist(dir)
+      expect(Puppet::FileSystem).to_not be_exist(symlink)
     end
 
     it "should delete only the symlink and not the target when calling unlink instance method" do

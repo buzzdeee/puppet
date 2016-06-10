@@ -15,15 +15,25 @@ hosts_to_test = agents.reject do |agent|
 end
 skip_test "No suitable hosts found" if hosts_to_test.empty?
 
+username = "pl#{rand(99999).to_i}"
+
+teardown do
+  step "Teardown: Ensure test user is removed"
+  hosts_to_test.each do |host|
+    on agent, puppet('resource', 'user', username, 'ensure=absent')
+    on agent, puppet('resource', 'group', username, 'ensure=absent')
+  end
+end
+
 adduser_manifest = <<MANIFEST
-user { 'passwordtestuser':
+user { '#{username}':
   ensure   => 'present',
   password => 'apassword',
 }
 MANIFEST
 
 changepass_manifest = <<MANIFEST
-user { 'passwordtestuser':
+user { '#{username}':
   ensure   => 'present',
   password => 'newpassword',
   noop     => true,
@@ -31,8 +41,6 @@ user { 'passwordtestuser':
 MANIFEST
 
 apply_manifest_on(hosts_to_test, adduser_manifest )
-results = apply_manifest_on(hosts_to_test, changepass_manifest )
-
-results.each do |result|
+apply_manifest_on(hosts_to_test, changepass_manifest ) do |result|
   assert_match( /current_value \[old password hash redacted\], should be \[new password hash redacted\]/ , "#{result.host}: #{result.stdout}" )
 end

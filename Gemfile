@@ -25,7 +25,7 @@ end
 
 gem "puppet", :path => File.dirname(__FILE__), :require => false
 gem "facter", *location_for(ENV['FACTER_LOCATION'] || ['> 2.0', '< 4'])
-gem "hiera", *location_for(ENV['HIERA_LOCATION'] || ['> 1.0', '< 3'])
+gem "hiera", *location_for(ENV['HIERA_LOCATION'] || ['>= 2.0', '< 4'])
 gem "rake", "10.1.1", :require => false
 
 group(:development, :test) do
@@ -46,9 +46,12 @@ group(:development, :test) do
   gem "multi_json", "1.7.7", :require => false, :platforms => [:ruby, :jruby]
   gem "json-schema", "2.1.1", :require => false, :platforms => [:ruby, :jruby]
 
-  gem "rubocop", "~> 0.26.1", :platforms => [:ruby]
+  gem "rubocop", "~> 0.39.0", :platforms => [:ruby]
 
   gem 'rdoc', "~> 4.1", :platforms => [:ruby]
+
+  gem 'webmock', '~> 1.24'
+  gem 'vcr', '~> 2.9'
 end
 
 group(:development) do
@@ -62,12 +65,7 @@ group(:extra) do
   gem "net-ssh", '~> 2.1', :require => false
   gem "puppetlabs_spec_helper", :require => false
   gem "tzinfo", :require => false
-  case RUBY_PLATFORM
-  when 'java'
-    gem "msgpack-jruby", :require => false
-  else
-    gem "msgpack", :require => false
-  end
+  gem "msgpack", :require => false
 end
 
 require 'yaml'

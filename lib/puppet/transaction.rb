@@ -1,5 +1,6 @@
 require 'puppet'
 require 'puppet/util/tagging'
+require 'puppet/util/skip_tags'
 require 'puppet/application'
 require 'digest/sha1'
 require 'set'
@@ -79,7 +80,7 @@ class Puppet::Transaction
   # necessary events.
   def evaluate(&block)
     block ||= method(:eval_resource)
-    generator = AdditionalResourceGenerator.new(@catalog, relationship_graph, @prioritizer)
+    generator = AdditionalResourceGenerator.new(@catalog, nil, @prioritizer)
     @catalog.vertices.each { |resource| generator.generate_additional_resources(resource) }
 
     perform_pre_run_checks
@@ -135,6 +136,9 @@ class Puppet::Transaction
       end
     end
 
+    # Generate the relationship graph, set up our generator to use it
+    # for eval_generate, then kick off our traversal.
+    generator.relationship_graph = relationship_graph
     relationship_graph.traverse(:while => continue_while,
                                 :pre_process => pre_process,
                                 :overly_deferred_resource_handler => overly_deferred_resource_handler,
@@ -182,6 +186,10 @@ class Puppet::Transaction
     super
   end
 
+  def skip_tags
+    @skip_tags ||= Puppet::Util::SkipTags.new(Puppet[:skip_tags]).tags
+  end
+
   def prefetch_if_necessary(resource)
     provider_class = resource.provider.class
     return unless provider_class.respond_to?(:prefetch) and !prefetched_providers[resource.type][provider_class.name]
@@ -210,6 +218,7 @@ class Puppet::Transaction
 
   # Evaluate a single resource.
   def eval_resource(resource, ancestor = nil)
+    propagate_failure(resource)
     if skip?(resource)
       resource_status(resource).skipped = true
       resource.debug("Resource is being skipped, unscheduling all events")
@@ -227,54 +236,43 @@ class Puppet::Transaction
 
   # Does this resource have any failed dependencies?
   def failed_dependencies?(resource)
-    # First make sure there are no failed dependencies.  To do this,
-    # we check for failures in any of the vertexes above us.  It's not
-    # enough to check the immediate dependencies, which is why we use
-    # a tree from the reversed graph.
-    found_failed = false
-
-
     # When we introduced the :whit into the graph, to reduce the combinatorial
     # explosion of edges, we also ended up reporting failures for containers
     # like class and stage.  This is undesirable; while just skipping the
     # output isn't perfect, it is RC-safe. --daniel 2011-06-07
     suppress_report = (resource.class == Puppet::Type.type(:whit))
 
-    relationship_graph.dependencies(resource).each do |dep|
-      next unless failed?(dep)
-      found_failed = true
-
+    s = resource_status(resource)
+    if s && s.dependency_failed?
       # See above. --daniel 2011-06-06
       unless suppress_report then
-        resource.notice "Dependency #{dep} has failures: #{resource_status(dep).failed}"
+        s.failed_dependencies.each do |dep|
+          resource.notice "Dependency #{dep} has failures: #{resource_status(dep).failed}"
+        end
       end
     end
 
-    found_failed
+    s && s.dependency_failed?
   end
 
-  # A general method for recursively generating new resources from a
-  # resource.
-  def generate_additional_resources(resource)
-    return unless resource.respond_to?(:generate)
-    begin
-      made = resource.generate
-    rescue => detail
-      resource.log_exception(detail, "Failed to generate additional resources using 'generate': #{detail}")
-    end
-    return unless made
-    made = [made] unless made.is_a?(Array)
-    made.uniq.each do |res|
-      begin
-        res.tag(*resource.tags)
-        @catalog.add_resource(res)
-        res.finish
-        add_conditional_directed_dependency(resource, res)
-        generate_additional_resources(res)
-      rescue Puppet::Resource::Catalog::DuplicateResourceError
-        res.info "Duplicate generated resource; skipping"
+  # We need to know if a resource has any failed dependencies before
+  # we try to process it. We keep track of this by keeping a list on
+  # each resource of the failed dependencies, and incrementally
+  # computing it as the union of the failed dependencies of each
+  # first-order dependency. We have to do this as-we-go instead of
+  # up-front at failure time because the graph may be mutated as we
+  # walk it.
+  def propagate_failure(resource)
+    failed = Set.new
+    relationship_graph.direct_dependencies_of(resource).each do |dep|
+      if (s = resource_status(dep))
+        failed.merge(s.failed_dependencies) if s.dependency_failed?
+        if s.failed?
+          failed.add(dep)
+        end
       end
     end
+    resource_status(resource).failed_dependencies = failed.to_a
   end
 
   # Should we ignore tags?
@@ -322,7 +320,9 @@ class Puppet::Transaction
 
   # Should this resource be skipped?
   def skip?(resource)
-    if missing_tags?(resource)
+    if skip_tags?(resource)
+      resource.debug "Skipping with skip tags #{skip_tags.join(", ")}"
+    elsif missing_tags?(resource)
       resource.debug "Not tagged with #{tags.join(", ")}"
     elsif ! scheduled?(resource)
       resource.debug "Not scheduled"
@@ -358,6 +358,17 @@ class Puppet::Transaction
     not resource.tagged?(*tags)
   end
 
+  def skip_tags?(resource)
+    return false if ignore_tags?
+    return false if skip_tags.empty?
+
+    resource.tagged?(*skip_tags)
+  end
+
+  def split_qualified_tags?
+    false
+  end
+
   # These two methods are only made public to enable the existing spec tests to run
   # under rspec 3 (apparently rspec 2 didn't enforce access controls?). Please do not
   # treat these as part of a public API.
@@ -368,4 +379,3 @@ class Puppet::Transaction
 end
 
 require 'puppet/transaction/report'
-

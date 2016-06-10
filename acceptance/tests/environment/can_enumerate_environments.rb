@@ -1,5 +1,7 @@
 test_name "Can enumerate environments via an HTTP endpoint"
 
+confine :except, :platform => /osx/ # see PUP-4820
+
 def master_port(agent)
   setting_on(agent, "agent", "masterport")
 end
@@ -52,18 +54,16 @@ if master.is_pe?
 end
 
 with_puppet_running_on(master, master_opts) do
-  agents.each do |agent|
-    step "Ensure that an unauthenticated client cannot access the environments list" do
-      on agent, "curl --tlsv1 -ksv https://#{master}:#{master_port(agent)}/puppet/v3/environments", :acceptable_exit_codes => [0,7] do
-        assert_match(/< HTTP\/1\.\d 403/, stderr)
-      end
+  step "Ensure that an unauthenticated client cannot access the environments list" do
+    on master, "curl --tlsv1 -ksv https://#{master}:#{master_port(master)}/puppet/v3/environments", :acceptable_exit_codes => [0,7] do
+      assert_match(/< HTTP\/1\.\d 403/, stderr)
     end
+  end
 
-    step "Ensure that an authenticated client can retrieve the list of environments" do
-      curl_master_from(agent, '/puppet/v3/environments') do
-        data = JSON.parse(stdout)
-        assert_equal(["env1", "env2", "production"], data["environments"].keys.sort)
-      end
+  step "Ensure that an authenticated client can retrieve the list of environments" do
+    curl_master_from(master, '/puppet/v3/environments') do
+      data = JSON.parse(stdout)
+      assert_equal(["env1", "env2", "production"], data["environments"].keys.sort)
     end
   end
 end

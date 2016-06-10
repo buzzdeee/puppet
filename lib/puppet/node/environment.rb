@@ -179,12 +179,28 @@ class Puppet::Node::Environment
   #   Puppet[:disable_per_environment_manifest] is true, and this environment's
   #   original environment.conf had a manifest setting that is not the
   #   Puppet[:default_manifest].
-  # @api private 
+  # @api private
   def conflicting_manifest_settings?
     return false if !Puppet[:disable_per_environment_manifest]
-    environment_conf = Puppet.lookup(:environments).get_conf(name)
-    original_manifest = environment_conf.raw_setting(:manifest)
+    original_manifest = configuration.raw_setting(:manifest)
     !original_manifest.nil? && !original_manifest.empty? && original_manifest != Puppet[:default_manifest]
+  end
+
+  # @api private
+  def static_catalogs?
+    if @static_catalogs.nil?
+      environment_conf = Puppet.lookup(:environments).get_conf(name)
+      @static_catalogs = (environment_conf.nil? ? Puppet[:static_catalogs] : environment_conf.static_catalogs)
+    end
+    @static_catalogs
+  end
+
+  # Return the environment configuration
+  # @return [Puppet::Settings::EnvironmentConf] The configuration
+  #
+  # @api private
+  def configuration
+    Puppet.lookup(:environments).get_conf(name)
   end
 
   # Checks the environment and settings for any conflicts
@@ -318,13 +334,17 @@ class Puppet::Node::Environment
   def modules_by_path
     modules_by_path = {}
     modulepath.each do |path|
-      Dir.chdir(path) do
-        module_names = Dir.entries(path).select do |name|
-          Puppet::Module.is_module_directory?(name, path)
+      if Puppet::FileSystem.exist?(path)
+        Dir.chdir(path) do
+          module_names = Dir.entries(path).select do |name|
+            Puppet::Module.is_module_directory?(name, path)
+          end
+          modules_by_path[path] = module_names.sort.map do |name|
+            Puppet::Module.new(name, File.join(path, name), self)
+          end
         end
-        modules_by_path[path] = module_names.sort.map do |name|
-          Puppet::Module.new(name, File.join(path, name), self)
-        end
+      else
+        modules_by_path[path] = []
       end
     end
     modules_by_path
@@ -438,8 +458,8 @@ class Puppet::Node::Environment
   private
 
   def self.extralibs()
-    if ENV["PUPPETLIB"]
-      split_path(ENV["PUPPETLIB"])
+    if Puppet::Util.get_env('PUPPETLIB')
+      split_path(Puppet::Util.get_env('PUPPETLIB'))
     else
       []
     end
@@ -488,6 +508,10 @@ class Puppet::Node::Environment
         parser.parse
       end
     end
+  rescue Puppet::ParseErrorWithIssue => detail
+    @known_resource_types.parse_failed = true
+    detail.environment = self.name
+    raise
   rescue => detail
     @known_resource_types.parse_failed = true
 

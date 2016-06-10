@@ -19,7 +19,6 @@ class Puppet::Pops::Evaluator::Collectors::ExportedCollector < Puppet::Pops::Eva
   # evaluate method
   def evaluate
     if Puppet[:storeconfigs] != true
-      Puppet.warning "Not collecting exported resources without storeconfigs"
       return false
     end
 
@@ -62,5 +61,9 @@ class Puppet::Pops::Evaluator::Collectors::ExportedCollector < Puppet::Pops::Eva
                 [resources.length, @type, resources.length == 1 ? "" : "s", time])
 
     resources
+  end
+
+  def to_s
+    "Exported-Collector[#{@type.to_s}]"
   end
 end

@@ -42,6 +42,9 @@ module Puppet
 
     feature :flaggable, "The provider can pass flags to the service."
 
+    feature :maskable, "The provider can 'mask' the service.",
+      :methods => [:mask]
+
     newproperty(:enable, :required_features => :enableable) do
       desc "Whether a service should be enabled to start at boot.
         This property behaves quite differently depending on the platform;
@@ -60,8 +63,25 @@ module Puppet
         provider.manual_start
       end
 
+      # This only makes sense on systemd systems. Otherwise, it just defaults
+      # to disable.
+      newvalue(:mask, :event => :service_disabled, :required_features => :maskable) do
+        provider.mask
+      end
+
       def retrieve
         provider.enabled?
+      end
+
+      # This only makes sense on systemd systems. Static services cannot be enabled
+      # or disabled manually.
+      def insync?(current)
+        if provider.respond_to?(:cached_enabled?) && provider.cached_enabled? == 'static'
+          Puppet.debug("Unable to enable or disable static service #{@resource[:name]}")
+          return true
+        end
+
+        super(current)
       end
 
       validate do |value|
@@ -229,6 +249,10 @@ module Puppet
       else
         debug "Skipping restart; service is not running"
       end
+    end
+
+    def self.needs_ensure_retrieved
+      false
     end
   end
 end

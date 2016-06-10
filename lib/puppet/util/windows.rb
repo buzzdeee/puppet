@@ -4,7 +4,11 @@ module Puppet::Util::Windows
     class UserProfile; end
     class Group; end
   end
+  module File; end
   module Registry
+  end
+  module SID
+    class Principal; end
   end
 
   if Puppet::Util::Platform.windows?
@@ -14,6 +18,7 @@ module Puppet::Util::Windows
     require 'puppet/util/windows/error'
     require 'puppet/util/windows/com'
     require 'puppet/util/windows/sid'
+    require 'puppet/util/windows/principal'
     require 'puppet/util/windows/file'
     require 'puppet/util/windows/security'
     require 'puppet/util/windows/user'

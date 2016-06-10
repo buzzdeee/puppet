@@ -3,6 +3,7 @@ require 'puppet/indirector'
 require 'puppet/file_serving'
 require 'puppet/file_serving/base'
 require 'puppet/util/checksums'
+require 'uri'
 
 # A class that handles retrieving file metadata.
 class Puppet::FileServing::Metadata < Puppet::FileServing::Base
@@ -12,7 +13,7 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
   extend Puppet::Indirector
   indirects :file_metadata, :terminus_class => :selector
 
-  attr_reader :path, :owner, :group, :mode, :checksum_type, :checksum, :ftype, :destination
+  attr_reader :path, :owner, :group, :mode, :checksum_type, :checksum, :ftype, :destination, :source_permissions, :content_uri
 
   PARAM_ORDER = [:mode, :ftype, :owner, :group]
 
@@ -22,10 +23,28 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
     @checksum_type = type
   end
 
+  def source_permissions=(source_permissions)
+    raise(ArgumentError, "Unsupported source_permission #{source_permissions}") unless [:use, :use_when_creating, :ignore].include?(source_permissions.intern)
+
+    @source_permissions = source_permissions.intern
+  end
+
+  def content_uri=(path)
+    begin
+      uri = URI.parse(URI.escape(path))
+    rescue URI::InvalidURIError => detail
+      raise(ArgumentError, "Could not understand URI #{path}: #{detail}")
+    end
+    raise(ArgumentError, "Cannot use opaque URLs '#{path}'") unless uri.hierarchical?
+    raise(ArgumentError, "Must use URLs of type puppet as content URI") if uri.scheme != "puppet"
+
+    @content_uri = path
+  end
+
   class MetaStat
     extend Forwardable
 
-    def initialize(stat, source_permissions = nil)
+    def initialize(stat, source_permissions)
       @stat = stat
       @source_permissions_ignore = (!source_permissions || source_permissions == :ignore)
     end
@@ -50,7 +69,7 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
       require 'puppet/util/windows/security'
     end
 
-    def initialize(stat, path, source_permissions = nil)
+    def initialize(stat, path, source_permissions)
       super(stat, source_permissions)
       @path = path
       raise(ArgumentError, "Unsupported Windows source permissions option #{source_permissions}") unless @source_permissions_ignore
@@ -66,13 +85,13 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
     end
   end
 
-  def collect_stat(path, source_permissions)
+  def collect_stat(path)
     stat = stat()
 
     if Puppet.features.microsoft_windows?
-      WindowsStat.new(stat, path, source_permissions)
+      WindowsStat.new(stat, path, @source_permissions)
     else
-      MetaStat.new(stat, source_permissions)
+      MetaStat.new(stat, @source_permissions)
     end
   end
 
@@ -82,7 +101,7 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
   def collect(source_permissions = nil)
     real_path = full_path
 
-    stat = collect_stat(real_path, source_permissions)
+    stat = collect_stat(real_path)
     @owner = stat.owner
     @group = stat.group
     @ftype = stat.ftype
@@ -115,6 +134,8 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
     @checksum_type ||= Puppet[:digest_algorithm]
     @ftype       = data.delete('type')
     @destination = data.delete('destination')
+    @source      = data.delete('source')
+    @content_uri = data.delete('content_uri')
     super(path,data)
   end
 
@@ -130,8 +151,8 @@ class Puppet::FileServing::Metadata < Puppet::FileServing::Base
         },
         'type'         => ftype,
         'destination'  => destination,
-
-      }
+      }.merge(content_uri ? {'content_uri' => content_uri} : {})
+       .merge(source ? {'source' => source} : {})
     )
   end
 

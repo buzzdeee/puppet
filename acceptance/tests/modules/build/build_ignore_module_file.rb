@@ -1,7 +1,7 @@
 test_name 'PUP-3981 - C63215 - Build Module Should Ignore Module File'
 
 #Init
-temp_module_path = '/tmp/test'
+temp_module_path = master.tmpdir('build_ignore_module_file_test')
 metadata_json_file_path = File.join(temp_module_path, 'metadata.json')
 modulefile_file_path = File.join(temp_module_path, 'Modulefile')
 
@@ -14,8 +14,8 @@ metadata_json_file = <<-FILE
   "summary": "Test Module",
   "license": "Apache Version 2.0",
   "source": "git://github.com/puppetlabs/puppetlabs-test.git",
-  "project_page": "http://github.com/puppetlabs/puppetlabs-test",
-  "issues_url": "http://github.com/puppetlabs/puppetlabs-test",
+  "project_page": "https://github.com/puppetlabs/puppetlabs-test",
+  "issues_url": "https://github.com/puppetlabs/puppetlabs-test",
   "dependencies": [
     {"name":"puppetlabs-stdlub","version_requirement":">= 1.0.0"}
   ]
@@ -32,9 +32,6 @@ teardown do
 end
 
 #Setup
-step 'Create Temporary Path for Module'
-on(master, "mkdir #{temp_module_path}")
-
 step 'Create "metadata.json" for Temporary Module'
 create_remote_file(master, metadata_json_file_path, metadata_json_file)
 

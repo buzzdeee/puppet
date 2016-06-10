@@ -49,6 +49,10 @@ class CompilerTestResource
   def line
     "42"
   end
+
+  def resource_type
+    self.class
+  end
 end
 
 describe Puppet::Parser::Compiler do
@@ -112,6 +116,7 @@ describe Puppet::Parser::Compiler do
     it "should set its node attribute" do
       expect(@compiler.node).to equal(@node)
     end
+
     it "should detect when ast nodes are absent" do
       expect(@compiler.ast_nodes?).to be_falsey
     end
@@ -141,8 +146,69 @@ describe Puppet::Parser::Compiler do
       expect(compiler.classlist).to match_array(['foo', 'bar'])
     end
 
+    it "should return a catalog with the specified code_id" do
+      node = Puppet::Node.new("mynode")
+      code_id = 'b59e5df0578ef411f773ee6c33d8073c50e7b8fe'
+      compiler = Puppet::Parser::Compiler.new(node, :code_id => code_id)
+
+      expect(compiler.catalog.code_id).to eq(code_id)
+    end
+
     it "should add a 'main' stage to the catalog" do
       expect(@compiler.catalog.resource(:stage, :main)).to be_instance_of(Puppet::Parser::Resource)
+    end
+  end
+
+  describe "sanitize_node" do
+    it "should delete trusted from parameters" do
+      node = Puppet::Node.new("mynode")
+      node.parameters['trusted'] =  { :a => 42 }
+      node.parameters['preserve_me'] = 'other stuff'
+      compiler = Puppet::Parser::Compiler.new(node)
+      sanitized = compiler.node
+      expect(sanitized.parameters['trusted']).to eq(nil)
+      expect(sanitized.parameters['preserve_me']).to eq('other stuff')
+    end
+
+    it "should not report trusted_data if trusted is false" do
+      node = Puppet::Node.new("mynode")
+      node.parameters['trusted'] = false
+      compiler = Puppet::Parser::Compiler.new(node)
+      sanitized = compiler.node
+      expect(sanitized.trusted_data).to_not eq(false)
+    end
+
+    it "should not report trusted_data if trusted is not a hash" do
+      node = Puppet::Node.new("mynode")
+      node.parameters['trusted'] = 'not a hash'
+      compiler = Puppet::Parser::Compiler.new(node)
+      sanitized = compiler.node
+      expect(sanitized.trusted_data).to_not eq('not a hash')
+    end
+
+    it "should not report trusted_data if trusted hash doesn't include known keys" do
+      node = Puppet::Node.new("mynode")
+      node.parameters['trusted'] = { :a => 42 }
+      compiler = Puppet::Parser::Compiler.new(node)
+      sanitized = compiler.node
+      expect(sanitized.trusted_data).to_not eq({ :a => 42 })
+    end
+
+    it "should prefer trusted_data in the node above other plausible sources" do
+      node = Puppet::Node.new("mynode")
+      node.trusted_data = { 'authenticated' => true,
+                           'certname'      => 'the real deal',
+                           'extensions'    => 'things' }
+
+      node.parameters['trusted'] = { 'authenticated' => true,
+                                     'certname'      => 'not me',
+                                     'extensions'    => 'things' }
+
+      compiler = Puppet::Parser::Compiler.new(node)
+      sanitized = compiler.node
+      expect(sanitized.trusted_data).to eq({ 'authenticated' => true,
+                                             'certname'      => 'the real deal',
+                                             'extensions'    => 'things' })
     end
   end
 
@@ -190,6 +256,22 @@ describe Puppet::Parser::Compiler do
       @compiler.compile
       expect(@compiler.topscope['a']).to eq("b")
       expect(@compiler.topscope['c']).to eq("d")
+    end
+
+    it "should set node parameters that are of Symbol type as String variables in the top scope" do
+      params = {"a" => :b}
+      @node.stubs(:parameters).returns(params)
+      compile_stub(:set_node_parameters)
+      @compiler.compile
+      expect(@compiler.topscope['a']).to eq("b")
+    end
+
+    it "should set the node's environment as a string variable in top scope" do
+      compile_stub(:set_node_parameters)
+      @node.merge({'wat' => 'this is how the sausage is made'})
+      @compiler.compile
+      expect(@compiler.topscope['environment']).to eq("testing")
+      expect(@compiler.topscope['wat']).to eq('this is how the sausage is made')
     end
 
     it "should set the client and server versions on the catalog" do
@@ -629,7 +711,7 @@ describe Puppet::Parser::Compiler do
       @node.classes = klass
       klass = Puppet::Resource::Type.new(:hostclass, 'foo', :arguments => {'a' => nil, 'b' => nil})
       @compiler.topscope.known_resource_types.add klass
-      expect { @compiler.compile }.to raise_error(Puppet::ParseError, "Must pass b to Class[Foo]")
+      expect { @compiler.compile }.to raise_error(Puppet::PreformattedError, /Class\[Foo\]: expects a value for parameter 'b'/)
     end
 
     it "should fail if invalid parameters are passed" do
@@ -637,7 +719,7 @@ describe Puppet::Parser::Compiler do
       @node.classes = klass
       klass = Puppet::Resource::Type.new(:hostclass, 'foo', :arguments => {})
       @compiler.topscope.known_resource_types.add klass
-      expect { @compiler.compile }.to raise_error(Puppet::ParseError, "Invalid parameter: '3' on Class[Foo]")
+      expect { @compiler.compile }.to raise_error(Puppet::PreformattedError, /Class\[Foo\]: has no parameter named '3'/)
     end
 
     it "should ensure class is in catalog without params" do
@@ -756,6 +838,24 @@ describe Puppet::Parser::Compiler do
     end
   end
 
+  describe 'when using meta parameters to form relationships' do
+    include PuppetSpec::Compiler
+    [:before, :subscribe, :notify, :require].each do | meta_p |
+      it "an entry consisting of nested empty arrays is flattened for parameter #{meta_p}" do
+          expect {
+          node = Puppet::Node.new('someone')
+          manifest = <<-"MANIFEST"
+            notify{hello_kitty: message => meow, #{meta_p} => [[],[]]}
+            notify{hello_kitty2: message => meow, #{meta_p} => [[],[[]],[]]}
+          MANIFEST
+
+          catalog = compile_to_catalog(manifest, node)
+          catalog.to_ral
+        }.not_to raise_error
+      end
+    end
+  end
+
   describe "when evaluating node classes" do
     include PuppetSpec::Compiler
 
@@ -868,6 +968,7 @@ describe Puppet::Parser::Compiler do
       end
     end
   end
+
 
   describe "when managing resource overrides" do
 

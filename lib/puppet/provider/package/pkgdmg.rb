@@ -9,7 +9,7 @@
 # in /var/db/.puppet_pkgdmg_installed_<name>
 
 require 'puppet/provider/package'
-require 'facter/util/plist'
+require 'puppet/util/plist' if Puppet.features.cfpropertylist?
 require 'puppet/util/http_proxy'
 
 Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Package do
@@ -36,6 +36,7 @@ Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Packag
       package, you must create a new DMG with a different filename."
 
   confine :operatingsystem => :darwin
+  confine :feature         => :cfpropertylist
   defaultfor :operatingsystem => :darwin
   commands :installer => "/usr/sbin/installer"
   commands :hdiutil => "/usr/bin/hdiutil"
@@ -68,8 +69,10 @@ Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Packag
   end
 
   def self.installpkgdmg(source, name)
-    http_proxy_host = Puppet::Util::HttpProxy.http_proxy_host
-    http_proxy_port = Puppet::Util::HttpProxy.http_proxy_port
+    unless Puppet::Util::HttpProxy.no_proxy?(source)
+      http_proxy_host = Puppet::Util::HttpProxy.http_proxy_host
+      http_proxy_port = Puppet::Util::HttpProxy.http_proxy_port
+    end
 
     unless source =~ /\.dmg$/i || source =~ /\.pkg$/i
       raise Puppet::Error.new("Mac OS X PKG DMG's must specify a source string ending in .dmg or flat .pkg file")
@@ -100,7 +103,7 @@ Puppet::Type.type(:package).provide :pkgdmg, :parent => Puppet::Provider::Packag
         # If you fix this to use open-uri again, you must update the docs above. -NF
         File.open(cached_source) do |dmg|
           xml_str = hdiutil "mount", "-plist", "-nobrowse", "-readonly", "-noidme", "-mountrandom", "/tmp", dmg.path
-          hdiutil_info = Plist::parse_xml(xml_str)
+          hdiutil_info = Puppet::Util::Plist.parse_plist(xml_str)
           raise Puppet::Error.new("No disk entities returned by mount at #{dmg.path}") unless hdiutil_info.has_key?("system-entities")
           mounts = hdiutil_info["system-entities"].collect { |entity|
             entity["mount-point"]

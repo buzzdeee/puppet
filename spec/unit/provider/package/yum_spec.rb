@@ -21,8 +21,23 @@ describe provider_class do
     provider
   end
 
+  let(:arch) { 'x86_64' }
+  let(:arch_resource) do
+    Puppet::Type.type(:package).new(
+      :name     => "#{name}.#{arch}",
+      :ensure   => :installed,
+      :provider => 'yum'
+    )
+  end
+
+  let(:arch_provider) do
+    provider = provider_class.new
+    provider.resource = arch_resource
+    provider
+  end
+
   before do
-    provider.stubs(:yum).returns 'yum'
+    provider_class.stubs(:command).with(:cmd).returns('/usr/bin/yum')
     provider.stubs(:rpm).returns 'rpm'
     provider.stubs(:get).with(:version).returns '1'
     provider.stubs(:get).with(:release).returns '1'
@@ -42,151 +57,32 @@ describe provider_class do
     end
   end
 
-  describe 'package evr parsing' do
-
-    it 'should parse full simple evr' do
-      v = provider.yum_parse_evr('0:1.2.3-4.el5')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq('4.el5')
-    end
-
-    it 'should parse version only' do
-      v = provider.yum_parse_evr('1.2.3')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq(nil)
-    end
-
-    it 'should parse version-release' do
-      v = provider.yum_parse_evr('1.2.3-4.5.el6')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq('4.5.el6')
-    end
-
-    it 'should parse release with git hash' do
-      v = provider.yum_parse_evr('1.2.3-4.1234aefd')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq('4.1234aefd')
-    end
-
-    it 'should parse single integer versions' do
-      v = provider.yum_parse_evr('12345')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('12345')
-      expect(v[:release]).to eq(nil)
-    end
-
-    it 'should parse text in the epoch to 0' do
-      v = provider.yum_parse_evr('foo0:1.2.3-4')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq('4')
-    end
-
-    it 'should parse revisions with text' do
-      v = provider.yum_parse_evr('1.2.3-SNAPSHOT20140107')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('1.2.3')
-      expect(v[:release]).to eq('SNAPSHOT20140107')
-    end
-
-    # test cases for PUP-682
-    it 'should parse revisions with text and numbers' do
-      v = provider.yum_parse_evr('2.2-SNAPSHOT20121119105647')
-      expect(v[:epoch]).to eq('0')
-      expect(v[:version]).to eq('2.2')
-      expect(v[:release]).to eq('SNAPSHOT20121119105647')
-    end
-
-  end
-
-  describe 'yum evr comparison' do
-
-    # currently passing tests
-    it 'should evaluate identical version-release as equal' do
-      v = provider.yum_compareEVR({:epoch => '0', :version => '1.2.3', :release => '1.el5'},
-                                  {:epoch => '0', :version => '1.2.3', :release => '1.el5'})
-      expect(v).to eq(0)
-    end
-
-    it 'should evaluate identical version as equal' do
-      v = provider.yum_compareEVR({:epoch => '0', :version => '1.2.3', :release => nil},
-                                  {:epoch => '0', :version => '1.2.3', :release => nil})
-      expect(v).to eq(0)
-    end
-
-    it 'should evaluate identical version but older release as less' do
-      v = provider.yum_compareEVR({:epoch => '0', :version => '1.2.3', :release => '1.el5'},
-                                  {:epoch => '0', :version => '1.2.3', :release => '2.el5'})
-      expect(v).to eq(-1)
-    end
-
-    it 'should evaluate identical version but newer release as greater' do
-      v = provider.yum_compareEVR({:epoch => '0', :version => '1.2.3', :release => '3.el5'},
-                                  {:epoch => '0', :version => '1.2.3', :release => '2.el5'})
-      expect(v).to eq(1)
-    end
-
-    it 'should evaluate a newer epoch as greater' do
-      v = provider.yum_compareEVR({:epoch => '1', :version => '1.2.3', :release => '4.5'},
-                                  {:epoch => '0', :version => '1.2.3', :release => '4.5'})
-      expect(v).to eq(1)
-    end
-
-    # these tests describe PUP-1244 logic yet to be implemented
-    it 'should evaluate any version as equal to the same version followed by release' do
-      v = provider.yum_compareEVR({:epoch => '0', :version => '1.2.3', :release => nil},
-                                  {:epoch => '0', :version => '1.2.3', :release => '2.el5'})
-      expect(v).to eq(0)
-    end
-
-    # test cases for PUP-682
-    it 'should evaluate same-length numeric revisions numerically' do
-      expect(provider.yum_compareEVR({:epoch => '0', :version => '2.2', :release => '405'},
-                               {:epoch => '0', :version => '2.2', :release => '406'})).to eq(-1)
-    end
-
-  end
-
-  describe 'yum version segment comparison' do
-
-    it 'should treat two nil values as equal' do
-      v = provider.compare_values(nil, nil)
-      expect(v).to eq(0)
-    end
-
-    it 'should treat a nil value as less than a non-nil value' do
-      v = provider.compare_values(nil, '0')
-      expect(v).to eq(-1)
-    end
-
-    it 'should treat a non-nil value as greater than a nil value' do
-      v = provider.compare_values('0', nil)
-      expect(v).to eq(1)
-    end
-
-    it 'should pass two non-nil values on to rpmvercmp' do
-      provider.stubs(:rpmvercmp) { 0 }
-      provider.expects(:rpmvercmp).with('s1', 's2')
-      provider.compare_values('s1', 's2')
-    end
-
-  end
-
   describe 'when installing' do
     before(:each) do
       Puppet::Util.stubs(:which).with("rpm").returns("/bin/rpm")
       provider.stubs(:which).with("rpm").returns("/bin/rpm")
       Puppet::Util::Execution.expects(:execute).with(["/bin/rpm", "--version"], {:combine => true, :custom_environment => {}, :failonfail => true}).returns("4.10.1\n").at_most_once
+      Facter.stubs(:value).with(:operatingsystemmajrelease).returns('6')
     end
 
     it 'should call yum install for :installed' do
       resource.stubs(:should).with(:ensure).returns :installed
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, name)
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, 'mypackage'])
       provider.install
+    end
+
+    context 'on el-5' do
+      before(:each) do
+        Facter.stubs(:value).with(:operatingsystemmajrelease).returns('5')
+      end
+
+      it 'should catch yum install failures when status code is wrong' do
+        resource.stubs(:should).with(:ensure).returns :installed
+        Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-e', '0', '-y', :install, name]).returns("No package #{name} available.")
+        expect {
+          provider.install
+        }.to raise_error(Puppet::Error, "Could not find package #{name}")
+      end
     end
 
     it 'should use :install to update' do
@@ -197,7 +93,7 @@ describe provider_class do
     it 'should be able to set version' do
       version = '1.2'
       resource[:ensure] = version
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, "#{name}-#{version}")
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "#{name}-#{version}"])
       provider.stubs(:query).returns :ensure => version
       provider.install
     end
@@ -205,6 +101,7 @@ describe provider_class do
     it 'should handle partial versions specified' do
       version = '1.3.4'
       resource[:ensure] = version
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, 'mypackage-1.3.4'])
       provider.stubs(:query).returns :ensure => '1.3.4-1.el6'
       provider.install
     end
@@ -213,7 +110,7 @@ describe provider_class do
       current_version = '1.2'
       version = '1.0'
       resource[:ensure] = '1.0'
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :downgrade, "#{name}-#{version}")
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :downgrade, "#{name}-#{version}"])
       provider.stubs(:query).returns(:ensure => current_version).then.returns(:ensure => version)
       provider.install
     end
@@ -222,22 +119,30 @@ describe provider_class do
       resource[:ensure] = :installed
       resource[:install_options] = ['-t', {'-x' => 'expackage'}]
 
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', ['-t', '-x=expackage'], :install, name)
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', ['-t', '-x=expackage'], :install, name])
       provider.install
     end
 
     it 'allow virtual packages' do
       resource[:ensure] = :installed
       resource[:allow_virtual] = true
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :list, name).never
-      provider.expects(:yum).with('-d', '0', '-e', '0', '-y', :install, name)
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :list, name]).never
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, name])
       provider.install
+    end
+
+    it 'moves architecture to end of version' do
+      version = '1.2.3'
+      arch_resource[:ensure] = version
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-d', '0', '-e', '0', '-y', :install, "#{name}-#{version}.#{arch}"])
+      arch_provider.stubs(:query).returns :ensure => version
+      arch_provider.install
     end
   end
 
   describe 'when uninstalling' do
     it 'should use erase to purge' do
-      provider.expects(:yum).with('-y', :erase, name)
+      Puppet::Util::Execution.expects(:execute).with(['/usr/bin/yum', '-y', :erase, name])
       provider.purge
     end
   end
@@ -382,10 +287,6 @@ describe provider_class do
   end
 
   describe "executing yum check-update" do
-    before do
-      described_class.stubs(:command).with(:yum).returns '/usr/bin/yum'
-    end
-
     it "passes repos to enable to 'yum check-update'" do
       Puppet::Util::Execution.expects(:execute).with do |args, *rest|
         expect(args).to eq %w[/usr/bin/yum check-update --enablerepo=updates --enablerepo=centosplus]
@@ -436,7 +337,7 @@ describe provider_class do
 
     it "returns an empty hash if 'yum check-update' returned an exit code that was not 0 or 100" do
       Puppet::Util::Execution.expects(:execute).returns(stub(:exitstatus => 1))
-      described_class.expects(:warn)
+      described_class.expects(:warning).with('Could not check for updates, \'/usr/bin/yum check-update\' exited with 1')
       expect(described_class.check_updates([], [], [])).to eq({})
     end
   end
@@ -469,6 +370,39 @@ describe provider_class do
 
       it "parses multi-line values as a single package tuple" do
         expect(output['libpcap']).to eq([{:name => 'libpcap', :epoch => '14', :version => '1.4.0', :release => '1.20130826git2dbcaa1.el6', :arch => 'x86_64'}])
+      end
+    end
+
+    describe "with obsoleted packages" do
+      let(:check_update) { File.read(my_fixture('yum-check-update-obsoletes.txt')) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Obsoleting Packages'" do
+        expect(output).not_to include("Obsoleting")
+        expect(output).not_to include("NetworkManager-bluetooth.x86_64")
+        expect(output).not_to include("1:1.0.0-14.git20150121.b4ea599c.el7")
+      end
+    end
+    describe "with security notifications" do
+      let(:check_update) { File.read(my_fixture('yum-check-update-security.txt')) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Security'" do
+        expect(output).not_to include("Security")
+      end
+      it "includes updates before 'Security'" do
+        expect(output).to include("yum-plugin-fastestmirror.noarch")
+      end
+    end
+    describe "with broken update notices" do
+      let(:check_update) { File.read(my_fixture('yum-check-update-broken-notices.txt')) }
+      let(:output) { described_class.parse_updates(check_update) }
+
+      it "ignores all entries including and after 'Update'" do
+        expect(output).not_to include("Update")
+      end
+      it "includes updates before 'Update'" do
+        expect(output).to include("yum-plugin-fastestmirror.noarch")
       end
     end
   end

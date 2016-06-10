@@ -86,6 +86,22 @@ describe Puppet::Resource::Catalog, "when compiling" do
     expect(@catalog.server_version).to eq(5)
   end
 
+  it "defaults code_id to nil" do
+    catalog = Puppet::Resource::Catalog.new("host")
+    expect(catalog.code_id).to be_nil
+  end
+
+  it "should include a catalog_uuid" do
+    SecureRandom.stubs(:uuid).returns ("827a74c8-cf98-44da-9ff7-18c5e4bee41e")
+    catalog = Puppet::Resource::Catalog.new("host")
+    expect(catalog.catalog_uuid).to eq("827a74c8-cf98-44da-9ff7-18c5e4bee41e")
+  end
+
+  it "should include the current catalog_format" do
+    catalog = Puppet::Resource::Catalog.new("host")
+    expect(catalog.catalog_format).to eq(1)
+  end
+
   describe "when compiling" do
     it "should accept tags" do
       config = Puppet::Resource::Catalog.new("mynode")
@@ -126,6 +142,11 @@ describe Puppet::Resource::Catalog, "when compiling" do
       config = Puppet::Resource::Catalog.new("mynode")
       config.add_class("one")
       expect(config).to be_tagged("one")
+    end
+
+    it "handles resource titles with brackets" do
+      config = Puppet::Resource::Catalog.new("mynode")
+      expect(config.title_key_for_ref("Notify[[foo]bar]")).to eql(["Notify", "[foo]bar"])
     end
   end
 
@@ -248,6 +269,26 @@ describe Puppet::Resource::Catalog, "when compiling" do
         r == @r1
       end.edge?(@r1,@r2)).not_to be
     end
+
+    it "copies the version" do
+      @original.version = '123'
+      expect(@original.filter.version).to eq(@original.version)
+    end
+
+    it 'copies the code_id' do
+      @original.code_id = 'b59e5df0578ef411f773ee6c33d8073c50e7b8fe'
+      expect(@original.filter.code_id).to eq(@original.code_id)
+    end
+
+    it 'copies the catalog_uuid' do
+      @original.catalog_uuid = '827a74c8-cf98-44da-9ff7-18c5e4bee41e'
+      expect(@original.filter.catalog_uuid).to eq(@original.catalog_uuid)
+    end
+
+    it 'copies the catalog_format' do
+      @original.catalog_format = 42
+      expect(@original.filter.catalog_format).to eq(@original.catalog_format)
+    end
   end
 
   describe "when functioning as a resource container" do
@@ -255,6 +296,7 @@ describe Puppet::Resource::Catalog, "when compiling" do
       @catalog = Puppet::Resource::Catalog.new("host")
       @one = Puppet::Type.type(:notify).new :name => "one"
       @two = Puppet::Type.type(:notify).new :name => "two"
+      @three = Puppet::Type.type(:notify).new :name => "three"
       @dupe = Puppet::Type.type(:notify).new :name => "one"
     end
 
@@ -306,6 +348,32 @@ describe Puppet::Resource::Catalog, "when compiling" do
     it "should canonize how resources are referred to during retrieval when just the title is provided" do
       @catalog.add_resource(@one)
       expect(@catalog.resource("notify[one]", nil)).to equal(@one)
+    end
+
+    it "adds resources before an existing resource" do
+      @catalog.add_resource(@one)
+      @catalog.add_resource_before(@one, @two, @three)
+
+      expect(@catalog.resources).to eq([@two, @three, @one])
+    end
+
+    it "raises if adding a resource before a resource not in the catalog" do
+      expect {
+        @catalog.add_resource_before(@one, @two)
+      }.to raise_error(ArgumentError, "Cannot add resource Notify[two] before Notify[one] because Notify[one] is not yet in the catalog")
+    end
+
+    it "adds resources after an existing resource in reverse order" do
+      @catalog.add_resource(@one)
+      @catalog.add_resource_after(@one, @two, @three)
+
+      expect(@catalog.resources).to eq([@one, @three, @two])
+    end
+
+    it "raises if adding a resource after a resource not in the catalog" do
+      expect {
+        @catalog.add_resource_after(@one, @two)
+      }.to raise_error(ArgumentError, "Cannot add resource Notify[two] after Notify[one] because Notify[one] is not yet in the catalog")
     end
 
     describe 'with a duplicate resource' do
@@ -777,17 +845,25 @@ describe Puppet::Resource::Catalog, "when converting to pson" do
     @catalog = Puppet::Resource::Catalog.new("myhost")
   end
 
-  def pson_output_should
-    @catalog.class.expects(:from_data_hash).with { |hash| yield hash }.returns(:something)
+  { :name => 'myhost',
+    :version => 42,
+    :code_id => 'b59e5df0578ef411f773ee6c33d8073c50e7b8fe',
+    :catalog_uuid => '827a74c8-cf98-44da-9ff7-18c5e4bee41e',
+    :catalog_format => 42
+  }.each do |param, value|
+    it "emits a #{param} equal to #{value.inspect}" do
+      @catalog.send(param.to_s + "=", value)
+      pson = PSON.parse(@catalog.to_pson)
+
+      expect(pson[param.to_s]).to eq(@catalog.send(param))
+    end
   end
 
-  [:name, :version, :classes].each do |param|
-    it "should set its #{param} to the #{param} of the resource" do
-      @catalog.send(param.to_s + "=", "testing") unless @catalog.send(param)
+  it "emits an array of classes" do
+    @catalog.add_class('foo')
+    pson = PSON.parse(@catalog.to_pson)
 
-      pson_output_should { |hash| expect(hash[param.to_s]).to eq(@catalog.send(param)) }
-      Puppet::Resource::Catalog.from_data_hash PSON.parse @catalog.to_pson
-    end
+    expect(pson['classes']).to eq(['foo'])
   end
 
   it "should convert its resources to a PSON-encoded array and store it as the 'resources' data" do
@@ -826,6 +902,9 @@ describe Puppet::Resource::Catalog, "when converting from pson" do
 
   it "should create it with the provided name" do
     @data['version'] = 50
+    @data['code_id'] = 'b59e5df0578ef411f773ee6c33d8073c50e7b8fe'
+    @data['catalog_uuid'] = '827a74c8-cf98-44da-9ff7-18c5e4bee41e'
+    @data['catalog_format'] = 42
     @data['tags'] = %w{one two}
     @data['classes'] = %w{one two}
     @data['edges'] = [Puppet::Relationship.new("File[/foo]", "File[/bar]",
@@ -839,6 +918,9 @@ describe Puppet::Resource::Catalog, "when converting from pson" do
 
     expect(catalog.name).to eq('myhost')
     expect(catalog.version).to eq(@data['version'])
+    expect(catalog.code_id).to eq(@data['code_id'])
+    expect(catalog.catalog_uuid).to eq(@data['catalog_uuid'])
+    expect(catalog.catalog_format).to eq(@data['catalog_format'])
     expect(catalog).to be_tagged("one")
     expect(catalog).to be_tagged("two")
 
@@ -848,6 +930,11 @@ describe Puppet::Resource::Catalog, "when converting from pson" do
     expect(catalog.edges.collect(&:event)).to eq(["one"])
     expect(catalog.edges[0].source).to eq(catalog.resource(:file, "/foo"))
     expect(catalog.edges[0].target).to eq(catalog.resource(:file, "/bar"))
+  end
+
+  it "defaults the catalog_format to 0" do
+    catalog = Puppet::Resource::Catalog.from_data_hash PSON.parse @data.to_pson
+    expect(catalog.catalog_format).to eq(0)
   end
 
   it "should fail if the source resource cannot be found" do

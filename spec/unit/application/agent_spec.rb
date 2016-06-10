@@ -197,6 +197,11 @@ describe Puppet::Application::Agent do
       Puppet.stubs(:settraps)
     end
 
+    it "should not run with extra arguments" do
+      @puppetd.command_line.stubs(:args).returns(%w{disable})
+      expect{@puppetd.setup}.to raise_error ArgumentError, /does not take parameters/
+    end
+
     describe "with --test" do
       it "should call setup_test" do
         @puppetd.options[:test] = true
@@ -338,7 +343,17 @@ describe Puppet::Application::Agent do
 
     it "should not set catalog cache class if :catalog_cache_terminus is explicitly nil" do
       Puppet[:catalog_cache_terminus] = nil
+      Puppet::Resource::Catalog.indirection.unstub(:cache_class=)
       Puppet::Resource::Catalog.indirection.expects(:cache_class=).never
+
+      @puppetd.initialize_app_defaults
+      @puppetd.setup
+    end
+
+    it "should set catalog cache class to nil during a noop run" do
+      Puppet[:catalog_cache_terminus] = "json"
+      Puppet[:noop] = true
+      Puppet::Resource::Catalog.indirection.expects(:cache_class=).with(nil)
 
       @puppetd.initialize_app_defaults
       @puppetd.setup

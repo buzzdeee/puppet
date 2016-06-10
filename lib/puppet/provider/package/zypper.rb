@@ -12,6 +12,37 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
   defaultfor :operatingsystem => [:suse, :sles, :sled, :opensuse]
   confine    :operatingsystem => [:suse, :sles, :sled, :opensuse]
 
+  # @api private
+  # Reset the latest version hash to nil
+  # needed for spec tests to clear cached value
+  def self.reset!
+    @latest_versions = nil
+  end
+
+  def self.latest_package_version(package)
+    if @latest_versions.nil?
+      @latest_versions = list_updates
+    end
+
+    @latest_versions[package]
+  end
+
+  def self.list_updates
+    output = zypper 'list-updates'
+
+    avail_updates = {}
+
+    # split up columns
+    output.lines.each do |line|
+      pkg_ver = line.split(/\s*\|\s*/)
+      # ignore zypper headers
+      next unless pkg_ver[0] == 'v'
+      avail_updates[pkg_ver[2]] = pkg_ver[4]
+    end
+
+    avail_updates
+  end
+
   #on zypper versions <1.0, the version option returns 1
   #some versions of zypper output on stderr
   def zypper_version
@@ -35,10 +66,9 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
     end
 
     #This has been tested with following zypper versions
-    #SLE 10.2: 0.6.104
-    #SLE 11.0: 1.0.8
-    #OpenSuse 10.2: 0.6.13
-    #OpenSuse 11.2: 1.2.8
+    #SLE 10.4: 0.6.201
+    #SLE 11.3: 1.6.307
+    #SLE 12.0: 1.11.14
     #Assume that this will work on newer zypper versions
 
     #extract version numbers and convert to integers
@@ -52,13 +82,24 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
       quiet = '--quiet'
     end
 
-    options = [quiet, :install]
+    inst_opts = []
+    inst_opts = install_options if resource[:install_options]
+
+
+    options = []
+    options << quiet
+    options << '--no-gpg-check' unless inst_opts.delete('--no-gpg-check').nil?
+    options << :install
 
     #zypper 0.6.13 (OpenSuSE 10.2) does not support auto agree with licenses
     options << '--auto-agree-with-licenses' unless major < 1 and minor <= 6 and patch <= 13
     options << '--no-confirm'
-    options << '--name' unless @resource.allow_virtual? || should
-    options += install_options if resource[:install_options]
+    options += inst_opts unless inst_opts.empty?
+
+    # Zypper 0.6.201 doesn't recognize '--name'
+    # It is unclear where this functionality was introduced, but it
+    # is present as early as 1.0.13
+    options << '--name' unless major < 1 || @resource.allow_virtual? || should
     options << wanted
 
     zypper *options
@@ -72,20 +113,33 @@ Puppet::Type.type(:package).provide :zypper, :parent => :rpm do
 
   # What's the latest package version available?
   def latest
-    #zypper can only get a list of *all* available packages?
-    output = zypper "list-updates"
-
-    if output =~ /#{Regexp.escape @resource[:name]}\s*\|.*?\|\s*([^\s\|]+)/
-      return $1
-    else
+    return self.class.latest_package_version(@resource[:name]) ||
       # zypper didn't find updates, pretend the current
       # version is the latest
-      return @property_hash[:ensure]
-    end
+      @property_hash[:ensure]
   end
 
   def update
     # zypper install can be used for update, too
     self.install
+  end
+
+  def uninstall
+    #extract version numbers and convert to integers
+    major, minor, patch = zypper_version.scan(/\d+/).map{ |x| x.to_i }
+
+    if major < 1
+      super
+    else
+      options = [:remove, '--no-confirm']
+      if major == 1 && minor < 6
+          options << '--force-resolution'
+      end
+
+      options << @resource[:name]
+    	
+      zypper *options
+    end
+
   end
 end

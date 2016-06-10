@@ -1,6 +1,7 @@
 #! /usr/bin/env ruby
 require 'spec_helper'
 require 'puppet/agent'
+require 'puppet/configurer'
 
 class AgentTestClient
   def run
@@ -58,7 +59,6 @@ describe Puppet::Agent do
 
     client.expects(:run)
 
-    @agent.stubs(:running?).returns false
     @agent.stubs(:disabled?).returns false
     @agent.run
   end
@@ -75,19 +75,12 @@ describe Puppet::Agent do
   describe "when being run" do
     before do
       AgentTestClient.stubs(:lockfile_path).returns "/my/lock"
-      @agent.stubs(:running?).returns false
       @agent.stubs(:disabled?).returns false
     end
 
     it "should splay" do
       @agent.expects(:splay)
 
-      @agent.run
-    end
-
-    it "should do nothing if already running" do
-      @agent.expects(:running?).returns true
-      AgentTestClient.expects(:new).never
       @agent.run
     end
 
@@ -231,44 +224,6 @@ describe Puppet::Agent do
         agent = Puppet::Agent.new(AgentTestClient, true)
         expect(agent.should_fork).to be_falsey
       end
-    end
-  end
-
-  describe "when splaying" do
-    before do
-      Puppet[:splay] = true
-      Puppet[:splaylimit] = "10"
-    end
-
-    it "should do nothing if splay is disabled" do
-      Puppet[:splay] = false
-      @agent.expects(:sleep).never
-      @agent.splay
-    end
-
-    it "should do nothing if it has already splayed" do
-      @agent.expects(:splayed?).returns true
-      @agent.expects(:sleep).never
-      @agent.splay
-    end
-
-    it "should log that it is splaying" do
-      @agent.stubs :sleep
-      Puppet.expects :info
-      @agent.splay
-    end
-
-    it "should sleep for a random portion of the splaylimit plus 1" do
-      Puppet[:splaylimit] = "50"
-      @agent.expects(:rand).with(51).returns 10
-      @agent.expects(:sleep).with(10)
-      @agent.splay
-    end
-
-    it "should mark that it has splayed" do
-      @agent.stubs(:sleep)
-      @agent.splay
-      expect(@agent).to be_splayed
     end
   end
 

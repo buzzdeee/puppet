@@ -115,7 +115,7 @@ describe Puppet::Indirector::Indirection do
   describe "when initializing" do
     # (LAK) I've no idea how to test this, really.
     it "should store a reference to itself before it consumes its options" do
-      expect { @indirection = Puppet::Indirector::Indirection.new(Object.new, :testingness, :not_valid_option) }.to raise_error
+      expect { @indirection = Puppet::Indirector::Indirection.new(Object.new, :testingness, :not_valid_option) }.to raise_error(NoMethodError, /undefined method/)
       expect(Puppet::Indirector::Indirection.instance(:testingness)).to be_instance_of(Puppet::Indirector::Indirection)
       Puppet::Indirector::Indirection.instance(:testingness).delete
     end
@@ -393,6 +393,17 @@ describe Puppet::Indirector::Indirection do
 
           @indirection.find("/my/key")
         end
+
+        it "should fail if saving to the cache fails but log the exception" do
+          @cache.stubs(:find).returns nil
+
+          @terminus.stubs(:find).returns(@instance)
+          @cache.stubs(:save).raises RuntimeError
+
+          Puppet.expects(:log_exception)
+
+          expect { @indirection.find("/my/key") }.to raise_error RuntimeError
+        end
       end
     end
 
@@ -509,7 +520,7 @@ describe Puppet::Indirector::Indirection do
 
           @cache.expects(:save).never
           @terminus.expects(:save).raises "eh"
-          expect { @indirection.save(@instance) }.to raise_error
+          expect { @indirection.save(@instance) }.to raise_error(RuntimeError, /eh/)
         end
       end
     end

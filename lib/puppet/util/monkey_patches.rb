@@ -20,8 +20,16 @@ end
 
 class Symbol
   def <=> (other)
+    if (other.class != Symbol)
+      case Puppet[:strict]
+      when :warning
+        Puppet.warn_once('deprecation', 'symbol_comparison', 'Comparing Symbols to non-Symbol values is deprecated')
+      when :error
+        raise ArgumentError.new("Comparing Symbols to non-Symbol values is no longer allowed")
+      end
+    end
     self.to_s <=> other.to_s
-  end unless method_defined? '<=>'
+  end
 
   def intern
     self
@@ -114,15 +122,20 @@ if Puppet::Util::Platform.windows?
   require 'openssl'
 
   class OpenSSL::X509::Store
+    @puppet_certs_loaded = false
     alias __original_set_default_paths set_default_paths
     def set_default_paths
       # This can be removed once openssl integrates with windows
-      # cert store, see http://rt.openssl.org/Ticket/Display.html?id=2158
-      Puppet::Util::Windows::RootCerts.instance.to_a.uniq.each do |x509|
-        begin
-          add_cert(x509)
-        rescue OpenSSL::X509::StoreError => e
-          warn "Failed to add #{x509.subject.to_s}"
+      # cert store, see https://rt.openssl.org/Ticket/Display.html?id=2158
+      unless @puppet_certs_loaded
+        @puppet_certs_loaded = true
+
+        Puppet::Util::Windows::RootCerts.instance.to_a.uniq { |cert| cert.to_der }.each do |x509|
+          begin
+            add_cert(x509)
+          rescue OpenSSL::X509::StoreError => e
+            warn "Failed to add #{x509.subject.to_s}"
+          end
         end
       end
 

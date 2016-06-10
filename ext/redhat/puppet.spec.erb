@@ -29,8 +29,8 @@ Release:        <%= @rpmrelease -%>%{?dist}
 Vendor:         %{?_host_vendor}
 Summary:        A network tool for managing many disparate systems
 License:        ASL 2.0
-URL:            http://puppetlabs.com
-Source0:        http://puppetlabs.com/downloads/%{name}/%{name}-%{realversion}.tar.gz
+URL:            https://puppetlabs.com
+Source0:        https://puppetlabs.com/downloads/%{name}/%{name}-%{realversion}.tar.gz
 
 Group:          System Environment/Base
 
@@ -39,7 +39,7 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildRequires:  facter >= 1:1.7.0
 # Puppet 3.x drops ruby 1.8.5 support and adds ruby 1.9 support
 BuildRequires:  ruby >= 1.8.7
-BuildRequires:  hiera >= 1.0.0
+BuildRequires:  hiera >= 2.0.0
 BuildArch:      noarch
 Requires:       ruby >= 1.8
 Requires:       ruby-shadow
@@ -58,7 +58,7 @@ Requires:       facter >= 1:1.7.0
 # Puppet 3.x drops ruby 1.8.5 support and adds ruby 1.9 support
 # Ruby 1.8.7 available for el5 at: yum.puppetlabs.com/el/5/devel/$ARCH
 Requires:       ruby >= 1.8.7
-Requires:       hiera >= 1.0.0
+Requires:       hiera >= 2.0.0
 Obsoletes:      hiera-puppet < 1.0.0
 Provides:       hiera-puppet >= 1.0.0
 %{!?_without_augeas:Requires: ruby-augeas}
@@ -181,12 +181,9 @@ echo "D /var/run/%{name} 0755 %{name} %{name} -" > \
 # Create puppet modules directory for puppet module tool
 mkdir -p %{buildroot}%{_sysconfdir}/%{name}/modules
 
-
-# Install a NetworkManager dispatcher script to pickup changes to
-# # /etc/resolv.conf and such (https://bugzilla.redhat.com/532085).
-mkdir -p %{buildroot}%{_sysconfdir}/NetworkManager/dispatcher.d
-cp -pr ext/puppet-nm-dispatcher \
-  %{buildroot}%{_sysconfdir}/NetworkManager/dispatcher.d/98-%{name}
+# Masterhttp.log is created on server start and should be distributed
+# with correct permissions
+touch %{buildroot}%{_localstatedir}/log/puppet/masterhttp.log
 
 %files
 %defattr(-, root, root, 0755)
@@ -194,9 +191,6 @@ cp -pr ext/puppet-nm-dispatcher \
 %{_bindir}/puppet
 %{_bindir}/extlookup2hiera
 %{puppet_libdir}/*
-%dir %{_sysconfdir}/NetworkManager
-%dir %{_sysconfdir}/NetworkManager/dispatcher.d
-%{_sysconfdir}/NetworkManager/dispatcher.d/98-puppet
 %if 0%{?_with_systemd}
 %{_unitdir}/puppet.service
 %{_unitdir}/puppetagent.service
@@ -280,6 +274,7 @@ cp -pr ext/puppet-nm-dispatcher \
 %{_sysconfdir}/puppet/environments/example_env/README.environment
 %{_mandir}/man8/puppet-ca.8.gz
 %{_mandir}/man8/puppet-master.8.gz
+%attr(660, puppet, puppet) %{_localstatedir}/log/puppet/masterhttp.log
 
 # Fixed uid/gid were assigned in bz 472073 (Fedora), 471918 (RHEL-5),
 # and 471919 (RHEL-4)

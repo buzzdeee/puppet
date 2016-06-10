@@ -1,4 +1,6 @@
 test_name "should modify a user when no longer managing home (#20726)"
+confine :except, :platform => /^eos-/ # See ARISTA-37
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 require 'puppet/acceptance/windows_utils'
 extend Puppet::Acceptance::WindowsUtils
@@ -27,6 +29,9 @@ agents.each do |agent|
     home_prop = "home='#{profile_base(agent)}\\#{name}'"
   when /solaris/
     pending_test("managehome needs work on solaris")
+  when /osx/
+    skip_test("OSX doesn't support managehome")
+    # we don't get here
   end
 
   teardown do

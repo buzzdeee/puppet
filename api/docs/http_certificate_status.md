@@ -5,8 +5,9 @@ The `certificate status` endpoint allows a client to read or alter the
 status of a certificate or pending certificate request. It is only
 useful on the CA.
 
-In all requests the `:environment` must be given, but it has no bearing
-on the request. Certificates are global.
+Under Puppet Server's CA service, the `environment` parameter is ignored and can
+be omitted. Under a Rack or WEBrick Puppet master, `environment` is required and
+must be a valid environment, but it has no effect on the response.
 
 Find
 ----
@@ -125,5 +126,4 @@ Schema
 -----
 
 Find and search operations return objects which
-conform to the json schema at {file:api/schemas/host.json
-api/schemas/host.json}.
+conform to [the host schema.](../schemas/host.json)

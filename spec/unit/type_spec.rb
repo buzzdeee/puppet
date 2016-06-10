@@ -393,10 +393,46 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
         expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
       end
 
+      it 'should not fail autorequire contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autorequire(:autorelation_one) { [nil, 'foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
       it "should be able to autosubscribe resources" do
         type = Puppet::Type.newtype(:autorelation_two) do
           newparam(:name) { isnamevar }
           autosubscribe(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
+
+      it 'should not fail if autosubscribe contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autosubscribe(:autorelation_one) { [nil, 'foo'] }
         end
 
         relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
@@ -429,10 +465,46 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
         expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
       end
 
+      it "should not fail when autobefore contains undef entries" do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autobefore(:autorelation_one) { [nil, 'foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:NONE)
+      end
+
       it "should be able to autonotify resources" do
         type = Puppet::Type.newtype(:autorelation_two) do
           newparam(:name) { isnamevar }
           autonotify(:autorelation_one) { ['foo'] }
+        end
+
+        relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
+          autorelation_one { 'foo': }
+          autorelation_two { 'bar': }
+        MANIFEST
+
+        src = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_two[bar]' }.first
+        dst = relationship_graph.vertices.select{ |x| x.ref.to_s == 'Autorelation_one[foo]' }.first
+
+        expect(relationship_graph.edge?(src,dst)).to be_truthy
+        expect(relationship_graph.edges_between(src,dst).first.event).to eq(:ALL_EVENTS)
+      end
+
+      it 'should not fail if autonotify contains undef entries' do
+        type = Puppet::Type.newtype(:autorelation_two) do
+          newparam(:name) { isnamevar }
+          autonotify(:autorelation_one) { [nil, 'foo'] }
         end
 
         relationship_graph = compile_to_relationship_graph(<<-MANIFEST)
@@ -522,7 +594,7 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
     end
 
     it "should fail if any invalid attributes have been provided" do
-      expect { Puppet::Type.type(:mount).new(:title => "/foo", :nosuchattr => "whatever") }.to raise_error(Puppet::Error, /Invalid parameter/)
+      expect { Puppet::Type.type(:mount).new(:title => "/foo", :nosuchattr => "whatever") }.to raise_error(Puppet::Error, /no parameter named 'nosuchattr'/)
     end
 
     context "when an attribute fails validation" do
@@ -707,6 +779,20 @@ describe Puppet::Type, :unless => Puppet.features.microsoft_windows? do
     before do
       @resource = Puppet::Type.type(:mount).new(:name => "foo", :fstype => "bar", :pass => 1, :ensure => :present)
       @resource.property(:ensure).stubs(:retrieve).returns :absent
+    end
+
+    it "should always retrieve the ensure value by default" do
+      @ensurable_resource = Puppet::Type.type(:file).new(:name => "/not/existent", :mode => "0644")
+      Puppet::Type::File::Ensure.stubs(:ensure).returns :absent
+      Puppet::Type::File::Ensure.any_instance.expects(:retrieve).once
+      @ensurable_resource.retrieve_resource
+    end
+
+    it "should not retrieve the ensure value if specified" do
+      @ensurable_resource = Puppet::Type.type(:service).new(:name => "DummyService", :enable => true)
+      @ensurable_resource.properties.each { |prop| prop.stubs(:retrieve) }
+      Puppet::Type::Service::Ensure.any_instance.expects(:retrieve).never
+      @ensurable_resource.retrieve_resource
     end
 
     it "should fail if its provider is unsuitable" do

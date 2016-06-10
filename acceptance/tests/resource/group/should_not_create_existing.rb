@@ -1,6 +1,7 @@
 test_name "group should not create existing group"
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
-name = "test-group-#{Time.new.to_i}"
+name = "gr#{rand(999999).to_i}"
 
 agents.each do |agent|
   step "ensure the group exists on the target node"

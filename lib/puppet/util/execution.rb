@@ -1,3 +1,4 @@
+require 'timeout'
 require 'puppet/file_system/uniquefile'
 
 module Puppet
@@ -119,10 +120,10 @@ module Puppet::Util::Execution
   #   user id matches the effective user id of the current process.
   # @option options [Integer, String] :gid (nil) the group id of the group that the process should be run as. Will be ignored if the
   #   group id matches the effective group id of the current process.
-  # @option options [Boolean] :combine sets whether or not to combine stdout/stderr in the output
+  # @option options [Boolean] :combine sets whether or not to combine stdout/stderr in the output, if false stderr output is discarded
   # @option options [String] :stdinfile (nil) sets a file that can be used for stdin. Passing a string for stdin is not currently
   #   supported.
-  # @option options [Boolean] :squelch (true) if true, ignore stdout / stderr completely.
+  # @option options [Boolean] :squelch (false) if true, ignore stdout / stderr completely.
   # @option options [Boolean] :override_locale (true) by default (and if this option is set to true), we will temporarily override
   #   the user/system locale to "C" (via environment variables LANG and LC_*) while we are executing the command.
   #   This ensures that the output of the command will be formatted consistently, making it predictable for parsing.
@@ -192,8 +193,23 @@ module Puppet::Util::Execution
       if execution_stub = Puppet::Util::ExecutionStub.current_value
         return execution_stub.call(*exec_args)
       elsif Puppet.features.posix?
-        child_pid = execute_posix(*exec_args)
-        exit_status = Process.waitpid2(child_pid).last.exitstatus
+        child_pid = nil
+        begin
+          child_pid = execute_posix(*exec_args)
+          exit_status = Process.waitpid2(child_pid).last.exitstatus
+          child_pid = nil
+        rescue Timeout::Error => e
+          # NOTE: For Ruby 2.1+, an explicit Timeout::Error class has to be
+          # passed to Timeout.timeout in order for there to be something for
+          # this block to rescue.
+          unless child_pid.nil?
+            Process.kill(:TERM, child_pid)
+            # Spawn a thread to reap the process if it dies.
+            Thread.new { Process.waitpid(child_pid) }
+          end
+
+          raise e
+        end
       elsif Puppet.features.microsoft_windows?
         process_info = execute_windows(*exec_args)
         begin
@@ -301,7 +317,7 @@ module Puppet::Util::Execution
     end.join(" ") if command.is_a?(Array)
 
     options[:custom_environment] ||= {}
-    Puppet::Util.withenv(options[:custom_environment]) do
+    Puppet::Util.withenv(options[:custom_environment], :windows) do
       Puppet::Util::Windows::Process.execute(command, options, stdin, stdout, stderr)
     end
   end

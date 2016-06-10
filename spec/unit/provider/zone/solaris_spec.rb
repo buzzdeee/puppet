@@ -85,7 +85,8 @@ describe Puppet::Type.type(:zone).provider(:solaris) do
     end
   end
   context "#getconfig" do
-    zone_info =<<-EOF
+    describe "with a shared iptype zone" do
+      zone_info =<<-EOF
 zonename: dummy
 zonepath: /dummy/z
 brand: native
@@ -104,17 +105,68 @@ net:
         address: 1.1.1.2
         physical: ex0002
         defrouter not specified
-    EOF
-    it "should correctly parse zone info" do
-      provider.expects(:zonecfg).with(:info).returns(zone_info)
-      expect(provider.getconfig).to eq({
-        :brand=>"native",
-        :autoboot=>"true",
-        :"ip-type"=>"shared",
-        :zonename=>"dummy",
-        "net"=>[{:physical=>"ex0001", :address=>"1.1.1.1"}, {:physical=>"ex0002", :address=>"1.1.1.2"}],
-        :zonepath=>"/dummy/z"
-      })
+      EOF
+      it "should correctly parse zone info" do
+        provider.expects(:zonecfg).with(:info).returns(zone_info)
+        expect(provider.getconfig).to eq({
+          :brand=>"native",
+          :autoboot=>"true",
+          :"ip-type"=>"shared",
+          :zonename=>"dummy",
+          "net"=>[{:physical=>"ex0001", :address=>"1.1.1.1"}, {:physical=>"ex0002", :address=>"1.1.1.2"}],
+          :zonepath=>"/dummy/z"
+        })
+      end
+    end
+    describe "with an exclusive iptype zone" do
+      zone_info =<<-EOF
+zonename: dummy
+zonepath: /dummy/z
+brand: native
+autoboot: true
+bootargs:
+pool:
+limitpriv:
+scheduling-class:
+ip-type: exclusive
+hostid:
+net:
+        address not specified
+        allowed-address not specified
+        configure-allowed-address: true
+        physical: net1
+        defrouter not specified
+      EOF
+      it "should correctly parse zone info" do
+        provider.expects(:zonecfg).with(:info).returns(zone_info)
+        expect(provider.getconfig).to eq({
+          :brand=>"native",
+          :autoboot=>"true",
+          :"ip-type"=>"exclusive",
+          :zonename=>"dummy",
+          "net"=>[{:physical=>"net1",:'configure-allowed-address'=>"true"}],
+          :zonepath=>"/dummy/z"
+        })
+      end
+    end
+    describe "with an invalid or unrecognized config" do
+      it "should produce an error message with provider context when given an invalid config" do
+        erroneous_zone_info =<<-EOF
+          physical: net1'
+        EOF
+
+        provider.expects(:zonecfg).with(:info).returns(erroneous_zone_info)
+        provider.expects('err').with("Ignoring '          physical: net1''")
+        provider.getconfig
+      end
+
+
+      it "should produce a debugging message with provider context when given an unrecognized config" do
+        unrecognized_zone_info = "dummy"
+        provider.expects(:zonecfg).with(:info).returns(unrecognized_zone_info)
+        provider.expects('debug').with("Ignoring zone output 'dummy'")
+        provider.getconfig
+      end
     end
   end
   context "#flush" do

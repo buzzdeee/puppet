@@ -15,7 +15,7 @@ module Puppet::Util::Windows::ADSI
     def connect(uri)
       begin
         WIN32OLE.connect(uri)
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
         raise Puppet::Error.new( "ADSI connection error: #{e}", e )
       end
     end
@@ -56,21 +56,30 @@ module Puppet::Util::Windows::ADSI
       "winmgmts:{impersonationLevel=impersonate}!//#{host}/root/cimv2"
     end
 
+    # This method should *only* be used to generate WinNT://<SID> style monikers
+    # used for IAdsGroup::Add / IAdsGroup::Remove.  These URIs are not useable
+    # to resolve an account with WIN32OLE.connect
+    # Valid input is a SID::Principal, S-X-X style SID string or any valid
+    # account name with or without domain prefix
     # @api private
     def sid_uri_safe(sid)
-      return sid_uri(sid) if sid.kind_of?(Win32::Security::SID)
+      return sid_uri(sid) if sid.kind_of?(Puppet::Util::Windows::SID::Principal)
 
       begin
-        sid = Win32::Security::SID.new(Win32::Security::SID.string_to_sid(sid))
+        sid = Puppet::Util::Windows::SID.name_to_sid_object(sid)
         sid_uri(sid)
-      rescue SystemCallError
+      rescue Puppet::Util::Windows::Error, Puppet::Error
         nil
       end
     end
 
+    # This method should *only* be used to generate WinNT://<SID> style monikers
+    # used for IAdsGroup::Add / IAdsGroup::Remove.  These URIs are not useable
+    # to resolve an account with WIN32OLE.connect
     def sid_uri(sid)
-      raise Puppet::Error.new( "Must use a valid SID object" ) if !sid.kind_of?(Win32::Security::SID)
-      "WinNT://#{sid.to_s}"
+      raise Puppet::Error.new( "Must use a valid SID::Principal" ) if !sid.kind_of?(Puppet::Util::Windows::SID::Principal)
+
+      "WinNT://#{sid.sid}"
     end
 
     def uri(resource_name, resource_type, host = '.')
@@ -87,7 +96,7 @@ module Puppet::Util::Windows::ADSI
 
     ffi_convention :stdcall
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms724295(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/ms724295(v=vs.85).aspx
     # BOOL WINAPI GetComputerName(
     #   _Out_    LPTSTR lpBuffer,
     #   _Inout_  LPDWORD lpnSize
@@ -97,18 +106,17 @@ module Puppet::Util::Windows::ADSI
       [:lpwstr, :lpdword], :win32_bool
   end
 
-  class User
-    extend Enumerable
-    extend FFI::Library
+  module Shared
+    def uri(name, host = '.')
+      host = '.' if ['NT AUTHORITY', 'BUILTIN', Socket.gethostname].include?(host)
 
-    attr_accessor :native_user
-    attr_reader :name, :sid
-    def initialize(name, native_user = nil)
-      @name = name
-      @native_user = native_user
+      # group or user
+      account_type = self.name.split('::').last.downcase
+
+      Puppet::Util::Windows::ADSI.uri(name, account_type, host)
     end
 
-    def self.parse_name(name)
+    def parse_name(name)
       if name =~ /\//
         raise Puppet::Error.new( "Value must be in DOMAIN\\user style syntax" )
       end
@@ -120,20 +128,51 @@ module Puppet::Util::Windows::ADSI
       return account, domain
     end
 
+    def get_sids(adsi_child_collection)
+      sids = []
+      adsi_child_collection.each do |m|
+        sids << Puppet::Util::Windows::SID.octet_string_to_sid_object(m.objectSID)
+      end
+
+      sids
+    end
+
+    def name_sid_hash(names)
+      return {} if names.nil? || names.empty?
+
+      sids = names.map do |name|
+        sid = Puppet::Util::Windows::SID.name_to_sid_object(name)
+        raise Puppet::Error.new( "Could not resolve name: #{name}" ) if !sid
+        [sid.sid, sid]
+      end
+
+      Hash[ sids ]
+    end
+  end
+
+  class User
+    extend Enumerable
+    extend Puppet::Util::Windows::ADSI::Shared
+    extend FFI::Library
+
+    # https://msdn.microsoft.com/en-us/library/aa746340.aspx
+    # IADsUser interface
+
+    require 'puppet/util/windows/sid'
+
+    attr_accessor :native_user
+    attr_reader :name, :sid
+    def initialize(name, native_user = nil)
+      @name = name
+      @native_user = native_user
+    end
+
     def native_user
       @native_user ||= Puppet::Util::Windows::ADSI.connect(self.class.uri(*self.class.parse_name(@name)))
     end
 
     def sid
       @sid ||= Puppet::Util::Windows::SID.octet_string_to_sid_object(native_user.objectSID)
-    end
-
-    def self.uri(name, host = '.')
-      if sid_uri = Puppet::Util::Windows::ADSI.sid_uri_safe(name) then return sid_uri end
-
-      host = '.' if ['NT AUTHORITY', 'BUILTIN', Socket.gethostname].include?(host)
-
-      Puppet::Util::Windows::ADSI.uri(name, 'user', host)
     end
 
     def uri
@@ -155,7 +194,15 @@ module Puppet::Util::Windows::ADSI
     def commit
       begin
         native_user.SetInfo unless native_user.nil?
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
+        # ERROR_BAD_USERNAME 2202L from winerror.h
+        if e.message =~ /8007089A/m
+          raise Puppet::Error.new(
+           "Puppet is not able to create/delete domain users with the user resource.",
+           e
+          )
+        end
+
         raise Puppet::Error.new( "User update failed: #{e}", e )
       end
       self
@@ -174,13 +221,17 @@ module Puppet::Util::Windows::ADSI
     end
 
     def password=(password)
-      native_user.SetPassword(password)
-      commit
+      if !password.nil?
+        native_user.SetPassword(password)
+        commit
+      end
+
       fADS_UF_DONT_EXPIRE_PASSWD = 0x10000
       add_flag("UserFlags", fADS_UF_DONT_EXPIRE_PASSWD)
     end
 
     def groups
+      # https://msdn.microsoft.com/en-us/library/aa746342.aspx
       # WIN32OLE objects aren't enumerable, so no map
       groups = []
       native_user.Groups.each {|g| groups << g.Name} rescue nil
@@ -201,21 +252,46 @@ module Puppet::Util::Windows::ADSI
     end
     alias remove_from_group remove_from_groups
 
+
+    def add_group_sids(*sids)
+      group_names = sids.map { |s| s.domain_account }
+      add_to_groups(*group_names)
+    end
+
+    def remove_group_sids(*sids)
+      group_names = sids.map { |s| s.domain_account }
+      remove_from_groups(*group_names)
+    end
+
+    def group_sids
+      self.class.get_sids(native_user.Groups)
+    end
+
     def set_groups(desired_groups, minimum = true)
-      return if desired_groups.nil? or desired_groups.empty?
+      return if desired_groups.nil?
 
       desired_groups = desired_groups.split(',').map(&:strip)
 
-      current_groups = self.groups
+      current_hash = Hash[ self.group_sids.map { |sid| [sid.sid, sid] } ]
+      desired_hash = self.class.name_sid_hash(desired_groups)
 
       # First we add the user to all the groups it should be in but isn't
-      groups_to_add = desired_groups - current_groups
-      add_to_groups(*groups_to_add)
+      if !desired_groups.empty?
+        groups_to_add = (desired_hash.keys - current_hash.keys).map { |sid| desired_hash[sid] }
+        add_group_sids(*groups_to_add)
+      end
 
       # Then we remove the user from all groups it is in but shouldn't be, if
       # that's been requested
-      groups_to_remove = current_groups - desired_groups
-      remove_from_groups(*groups_to_remove) unless minimum
+      if !minimum
+        if desired_hash.empty?
+          groups_to_remove = current_hash.values
+        else
+          groups_to_remove = (current_hash.keys - desired_hash.keys).map { |sid| current_hash[sid] }
+        end
+
+        remove_group_sids(*groups_to_remove)
+      end
     end
 
     def self.create(name)
@@ -224,7 +300,7 @@ module Puppet::Util::Windows::ADSI
       new(name, Puppet::Util::Windows::ADSI.create(name, 'user'))
     end
 
-    # UNLEN from lmcons.h - http://stackoverflow.com/a/2155176
+    # UNLEN from lmcons.h - https://stackoverflow.com/a/2155176
     MAX_USERNAME_LENGTH = 256
     def self.current_user_name
       user_name = ''
@@ -244,9 +320,29 @@ module Puppet::Util::Windows::ADSI
       user_name
     end
 
-    def self.exists?(name)
-      Puppet::Util::Windows::ADSI::connectable?(User.uri(*User.parse_name(name)))
+    def self.exists?(name_or_sid)
+      well_known = false
+      if (sid = Puppet::Util::Windows::SID.name_to_sid_object(name_or_sid))
+        return true if sid.account_type == :SidTypeUser
+
+        # 'well known group' is special as it can be a group like Everyone OR a user like SYSTEM
+        # so try to resolve it
+        # https://msdn.microsoft.com/en-us/library/cc234477.aspx
+        well_known = sid.account_type == :SidTypeWellKnownGroup
+        return false if sid.account_type != :SidTypeAlias && !well_known
+        name_or_sid = "#{sid.domain}\\#{sid.account}"
+      end
+
+      user = Puppet::Util::Windows::ADSI.connect(User.uri(*User.parse_name(name_or_sid)))
+      # otherwise, verify that the account is actually a User account
+      user.Class == 'User'
+    rescue
+      # special accounts like SYSTEM cannot resolve via moniker like WinNT://./SYSTEM,user
+      # and thus fail to connect - so given a validly resolved SID, this failure is ambiguous as it
+      # may indicate either a group like Service or an account like SYSTEM
+      well_known
     end
+
 
     def self.delete(name)
       Puppet::Util::Windows::ADSI.delete(name, 'user')
@@ -265,7 +361,7 @@ module Puppet::Util::Windows::ADSI
 
     ffi_convention :stdcall
 
-    # http://msdn.microsoft.com/en-us/library/windows/desktop/ms724432(v=vs.85).aspx
+    # https://msdn.microsoft.com/en-us/library/windows/desktop/ms724432(v=vs.85).aspx
     # BOOL WINAPI GetUserName(
     #   _Out_    LPTSTR lpBuffer,
     #   _Inout_  LPDWORD lpnSize
@@ -279,8 +375,8 @@ module Puppet::Util::Windows::ADSI
     def self.delete(sid)
       begin
         Puppet::Util::Windows::ADSI.wmi_connection.Delete("Win32_UserProfile.SID='#{sid}'")
-      rescue => e
-        # http://social.technet.microsoft.com/Forums/en/ITCG/thread/0f190051-ac96-4bf1-a47f-6b864bfacee5
+      rescue WIN32OLERuntimeError => e
+        # https://social.technet.microsoft.com/Forums/en/ITCG/thread/0f190051-ac96-4bf1-a47f-6b864bfacee5
         # Prior to Vista SP1, there's no builtin way to programmatically
         # delete user profiles (except for delprof.exe). So try to delete
         # but warn if we fail
@@ -293,6 +389,10 @@ module Puppet::Util::Windows::ADSI
 
   class Group
     extend Enumerable
+    extend Puppet::Util::Windows::ADSI::Shared
+
+    # https://msdn.microsoft.com/en-us/library/aa706021.aspx
+    # IADsGroup interface
 
     attr_accessor :native_group
     attr_reader :name, :sid
@@ -302,17 +402,11 @@ module Puppet::Util::Windows::ADSI
     end
 
     def uri
-      self.class.uri(name)
-    end
-
-    def self.uri(name, host = '.')
-      if sid_uri = Puppet::Util::Windows::ADSI.sid_uri_safe(name) then return sid_uri end
-
-      Puppet::Util::Windows::ADSI.uri(name, 'group', host)
+      self.class.uri(sid.account, sid.domain)
     end
 
     def native_group
-      @native_group ||= Puppet::Util::Windows::ADSI.connect(uri)
+      @native_group ||= Puppet::Util::Windows::ADSI.connect(self.class.uri(*self.class.parse_name(name)))
     end
 
     def sid
@@ -322,22 +416,18 @@ module Puppet::Util::Windows::ADSI
     def commit
       begin
         native_group.SetInfo unless native_group.nil?
-      rescue Exception => e
+      rescue WIN32OLERuntimeError => e
+        # ERROR_BAD_USERNAME 2202L from winerror.h
+        if e.message =~ /8007089A/m
+          raise Puppet::Error.new(
+            "Puppet is not able to create/delete domain groups with the group resource.",
+            e
+          )
+        end
+
         raise Puppet::Error.new( "Group update failed: #{e}", e )
       end
       self
-    end
-
-    def self.name_sid_hash(names)
-      return {} if names.nil? or names.empty?
-
-      sids = names.map do |name|
-        sid = Puppet::Util::Windows::SID.name_to_sid_object(name)
-        raise Puppet::Error.new( "Could not resolve username: #{name}" ) if !sid
-        [sid.to_s, sid]
-      end
-
-      Hash[ sids ]
     end
 
     def add_member_sids(*sids)
@@ -360,27 +450,31 @@ module Puppet::Util::Windows::ADSI
     end
 
     def member_sids
-      sids = []
-      native_group.Members.each do |m|
-        sids << Puppet::Util::Windows::SID.octet_string_to_sid_object(m.objectSID)
-      end
-      sids
+      self.class.get_sids(native_group.Members)
     end
 
     def set_members(desired_members, inclusive = true)
-      return if desired_members.nil? or desired_members.empty?
+      return if desired_members.nil?
 
-      current_hash = Hash[ self.member_sids.map { |sid| [sid.to_s, sid] } ]
+      current_hash = Hash[ self.member_sids.map { |sid| [sid.sid, sid] } ]
       desired_hash = self.class.name_sid_hash(desired_members)
 
       # First we add all missing members
-      members_to_add = (desired_hash.keys - current_hash.keys).map { |sid| desired_hash[sid] }
-      add_member_sids(*members_to_add)
+      if !desired_hash.empty?
+        members_to_add = (desired_hash.keys - current_hash.keys).map { |sid| desired_hash[sid] }
+        add_member_sids(*members_to_add)
+      end
 
-      # Then we remove all extra members
-      members_to_remove = (current_hash.keys - desired_hash.keys).map { |sid| current_hash[sid] }
+      # Then we remove all extra members if inclusive
+      if inclusive
+        if desired_hash.empty?
+          members_to_remove = current_hash.values
+        else
+          members_to_remove = (current_hash.keys - desired_hash.keys).map { |sid| current_hash[sid] }
+        end
 
-      remove_member_sids(*members_to_remove) if inclusive
+        remove_member_sids(*members_to_remove)
+      end
     end
 
     def self.create(name)
@@ -389,8 +483,26 @@ module Puppet::Util::Windows::ADSI
       new(name, Puppet::Util::Windows::ADSI.create(name, 'group'))
     end
 
-    def self.exists?(name)
-      Puppet::Util::Windows::ADSI.connectable?(Group.uri(name))
+    def self.exists?(name_or_sid)
+      well_known = false
+      if (sid = Puppet::Util::Windows::SID.name_to_sid_object(name_or_sid))
+        return true if sid.account_type == :SidTypeGroup
+
+        # 'well known group' is special as it can be a group like Everyone OR a user like SYSTEM
+        # so try to resolve it
+        # https://msdn.microsoft.com/en-us/library/cc234477.aspx
+        well_known = sid.account_type == :SidTypeWellKnownGroup
+        return false if sid.account_type != :SidTypeAlias && !well_known
+        name_or_sid = "#{sid.domain}\\#{sid.account}"
+      end
+
+      user = Puppet::Util::Windows::ADSI.connect(Group.uri(*Group.parse_name(name_or_sid)))
+      user.Class == 'Group'
+    rescue
+      # special groups like Authenticated Users cannot resolve via moniker like WinNT://./Authenticated Users,group
+      # and thus fail to connect - so given a validly resolved SID, this failure is ambiguous as it
+      # may indicate either a group like Service or an account like SYSTEM
+      well_known
     end
 
     def self.delete(name)

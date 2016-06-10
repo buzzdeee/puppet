@@ -1,13 +1,13 @@
 require 'spec_helper'
 require 'puppet/pops'
 
-describe Puppet::Pops::Types::TypeParser do
+module Puppet::Pops
+module Types
+describe TypeParser do
   extend RSpec::Matchers::DSL
 
-  let(:parser) { Puppet::Pops::Types::TypeParser.new }
-  let(:types)  { Puppet::Pops::Types::TypeFactory }
-
-
+  let(:parser) { TypeParser.new }
+  let(:types)  { TypeFactory }
   it "rejects a puppet expression" do
     expect { parser.parse("1 + 1") }.to raise_error(Puppet::ParseError, /The expression <1 \+ 1> is not a valid type specification/)
   end
@@ -62,8 +62,24 @@ describe Puppet::Pops::Types::TypeParser do
     expect(parser.parse("Hash")).to be_the_type(types.hash_of_data)
   end
 
+  it "interprets a parameterized Array[0, 0] as an empty hash with no key and value type" do
+    expect(parser.parse("Array[0, 0]")).to be_the_type(types.array_of(types.default, types.range(0, 0)))
+  end
+
+  it "interprets a parameterized Hash[0, 0] as an empty hash with no key and value type" do
+    expect(parser.parse("Hash[0, 0]")).to be_the_type(types.hash_of(types.default, types.default, types.range(0, 0)))
+  end
+
   it "interprets a parameterized Hash[t] as a Hash of Scalar to t" do
     expect(parser.parse("Hash[Scalar, Integer]")).to be_the_type(types.hash_of(types.integer))
+  end
+
+  it 'interprets an Integer with one parameter to have unbounded upper range' do
+    expect(parser.parse('Integer[0]')).to eq(parser.parse('Integer[0,default]'))
+  end
+
+  it 'interprets a Float with one parameter to have unbounded upper range' do
+    expect(parser.parse('Float[0]')).to eq(parser.parse('Float[0,default]'))
   end
 
   it "parses a parameterized type into the type object" do
@@ -75,20 +91,16 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   it "parses a size constrained collection using capped range" do
-    parameterized_array = types.array_of(types.integer)
-    types.constrain_size(parameterized_array, 1,2)
-    parameterized_hash = types.hash_of(types.integer, types.boolean)
-    types.constrain_size(parameterized_hash, 1,2)
+    parameterized_array = types.array_of(types.integer, types.range(1,2))
+    parameterized_hash = types.hash_of(types.integer, types.boolean, types.range(1,2))
 
     expect(the_type_parsed_from(parameterized_array)).to be_the_type(parameterized_array)
     expect(the_type_parsed_from(parameterized_hash)).to be_the_type(parameterized_hash)
   end
 
   it "parses a size constrained collection with open range" do
-    parameterized_array = types.array_of(types.integer)
-    types.constrain_size(parameterized_array, 1,:default)
-    parameterized_hash = types.hash_of(types.integer, types.boolean)
-    types.constrain_size(parameterized_hash, 1,:default)
+    parameterized_array = types.array_of(types.integer, types.range(1, :default))
+    parameterized_hash = types.hash_of(types.integer, types.boolean, types.range(1, :default))
 
     expect(the_type_parsed_from(parameterized_array)).to be_the_type(parameterized_array)
     expect(the_type_parsed_from(parameterized_hash)).to be_the_type(parameterized_hash)
@@ -100,13 +112,12 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   it "parses tuple type" do
-    tuple_t = types.tuple(Integer, String)
+    tuple_t = types.tuple([Integer, String])
     expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
   end
 
   it "parses tuple type with occurrence constraint" do
-    tuple_t = types.tuple(Integer, String)
-    types.constrain_size(tuple_t, 2, 5)
+    tuple_t = types.tuple([Integer, String], types.range(2, 5))
     expect(the_type_parsed_from(tuple_t)).to be_the_type(tuple_t)
   end
 
@@ -122,7 +133,7 @@ describe Puppet::Pops::Types::TypeParser do
       'Pattern[/x9/, /([a-z]+)([1-9]+)/]'  => [:pattern, [/x9/, /([a-z]+)([1-9]+)/]],
     }.each do |source, type|
       it "such that the source '#{source}' yields the type #{type.to_s}" do
-        expect(parser.parse(source)).to be_the_type(Puppet::Pops::Types::TypeFactory.send(type[0], *type[1]))
+        expect(parser.parse(source)).to be_the_type(TypeFactory.send(type[0], *type[1]))
       end
     end
   end
@@ -132,20 +143,85 @@ describe Puppet::Pops::Types::TypeParser do
     expect { parser.parse("Hash[Integer, Integer, 1,2,3]") }.to raise_the_parameter_error("Hash", "2 to 4", 5)
   end
 
-  it "interprets anything that is not a built in type to be a resource type" do
-    expect(parser.parse("File")).to be_the_type(types.resource('file'))
+  context 'with scope context and loader' do
+    let!(:scope) { {} }
+    let(:loader) { Object.new }
+
+    before :each do
+      Adapters::LoaderAdapter.expects(:loader_for_model_object).with(instance_of(Model::QualifiedReference), scope).at_most_once.returns loader
+    end
+
+    it 'interprets anything that is not found by the loader to be a type reference' do
+      loader.expects(:load).with(:type, 'nonesuch').returns nil
+      expect(parser.parse('Nonesuch', scope)).to be_the_type(types.type_reference('Nonesuch'))
+    end
+
+    it 'interprets anything that is found by the loader to be what the loader found' do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse('File', scope)).to be_the_type(types.resource('File'))
+    end
+
+    it "parses a resource type with title" do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse("File['/tmp/foo']", scope)).to be_the_type(types.resource('file', '/tmp/foo'))
+    end
+
+    it "parses a resource type using 'Resource[type]' form" do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse("Resource[File]", scope)).to be_the_type(types.resource('file'))
+    end
+
+    it "parses a resource type with title using 'Resource[type, title]'" do
+      loader.expects(:load).with(:type, 'file').returns nil
+      expect(parser.parse("Resource[File, '/tmp/foo']", scope)).to be_the_type(types.resource('file', '/tmp/foo'))
+    end
+
+    it "parses a resource type with title using 'Resource[Type[title]]'" do
+      loader.expects(:load).with(:type, 'nonesuch').returns nil
+      expect(parser.parse("Resource[Nonesuch['fife']]", scope)).to be_the_type(types.resource('nonesuch', 'fife'))
+    end
   end
 
-  it "parses a resource type with title" do
-    expect(parser.parse("File['/tmp/foo']")).to be_the_type(types.resource('file', '/tmp/foo'))
+  context 'with loader context' do
+    let(:loader) { Puppet::Pops::Loader::BaseLoader.new(nil, "type_parser_unit_test_loader") }
+    before :each do
+      Puppet::Pops::Adapters::LoaderAdapter.expects(:loader_for_model_object).never
+    end
+
+    it 'interprets anything that is not found by the loader to be a type reference' do
+      loader.expects(:load).with(:type, 'nonesuch').returns nil
+      expect(parser.parse('Nonesuch', loader)).to be_the_type(types.type_reference('Nonesuch'))
+    end
+
+    it 'interprets anything that is found by the loader to be what the loader found' do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse('File', loader)).to be_the_type(types.resource('file'))
+    end
+
+    it "parses a resource type with title" do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse("File['/tmp/foo']", loader)).to be_the_type(types.resource('file', '/tmp/foo'))
+    end
+
+    it "parses a resource type using 'Resource[type]' form" do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse("Resource[File]", loader)).to be_the_type(types.resource('file'))
+    end
+
+    it "parses a resource type with title using 'Resource[type, title]'" do
+      loader.expects(:load).with(:type, 'file').returns types.resource('File')
+      expect(parser.parse("Resource[File, '/tmp/foo']", loader)).to be_the_type(types.resource('file', '/tmp/foo'))
+    end
   end
 
-  it "parses a resource type using 'Resource[type]' form" do
-    expect(parser.parse("Resource[File]")).to be_the_type(types.resource('file'))
-  end
+  context 'without a scope' do
+    it "interprets anything that is not a built in type to be a type reference" do
+      expect(parser.parse('File')).to eq(types.type_reference('File'))
+    end
 
-  it "parses a resource type with title using 'Resource[type, title]'" do
-    expect(parser.parse("Resource[File, '/tmp/foo']")).to be_the_type(types.resource('file', '/tmp/foo'))
+    it "interprets anything that is not a built in type with parameterers to be type reference with parameters" do
+      expect(parser.parse("File['/tmp/foo']")).to eq(types.type_reference("File['/tmp/foo']"))
+    end
   end
 
   it "parses a host class type" do
@@ -160,12 +236,16 @@ describe Puppet::Pops::Types::TypeParser do
    expect(parser.parse("Integer[1,2]")).to be_the_type(types.range(1,2))
   end
 
+  it 'parses a negative integer range' do
+    expect(parser.parse("Integer[-3,-1]")).to be_the_type(types.range(-3,-1))
+  end
+
   it 'parses a float range' do
    expect(parser.parse("Float[1.0,2.0]")).to be_the_type(types.float_range(1.0,2.0))
   end
 
   it 'parses a collection size range' do
-   expect(parser.parse("Collection[1,2]")).to be_the_type(types.constrain_size(types.collection,1,2))
+   expect(parser.parse("Collection[1,2]")).to be_the_type(types.collection(types.range(1,2)))
   end
 
   it 'parses a type type' do
@@ -194,7 +274,7 @@ describe Puppet::Pops::Types::TypeParser do
 
   it 'parses a parameterized callable type with 0 min/max' do
     t = parser.parse("Callable[0,0]")
-    expect(t).to be_the_type(types.callable())
+    expect(t).to be_the_type(types.callable(0,0))
     expect(t.param_types.types).to be_empty
   end
 
@@ -202,11 +282,17 @@ describe Puppet::Pops::Types::TypeParser do
     t = parser.parse("Callable[0,1]")
     expect(t).to be_the_type(types.callable(0,1))
     # Contains a Unit type to indicate "called with what you accept"
-    expect(t.param_types.types[0]).to be_the_type(Puppet::Pops::Types::PUnitType.new())
+    expect(t.param_types.types[0]).to be_the_type(PUnitType.new())
+  end
+
+  it 'parses all known literals' do
+    t = parser.parse('Nonesuch[{a=>undef,b=>true,c=>false,d=>default,e=>"string",f=>0,g=>1.0,h=>[1,2,3]}]')
+    expect(t).to be_a(PTypeReferenceType)
+    expect(t.type_string).to eql('Nonesuch[{a=>undef,b=>true,c=>false,d=>default,e=>"string",f=>0,g=>1.0,h=>[1,2,3]}]')
   end
 
   matcher :be_the_type do |type|
-    calc = Puppet::Pops::Types::TypeCalculator.new
+    calc = TypeCalculator.new
 
     match do |actual|
       calc.assignable?(actual, type) && calc.assignable?(type, actual)
@@ -234,7 +320,8 @@ describe Puppet::Pops::Types::TypeParser do
   end
 
   def the_type_spec_for(type)
-    calc = Puppet::Pops::Types::TypeCalculator.new
-    calc.string(type)
+    TypeFormatter.string(type)
   end
+end
+end
 end

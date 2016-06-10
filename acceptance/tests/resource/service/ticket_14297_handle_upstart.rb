@@ -2,9 +2,12 @@ test_name 'Upstart Testing'
 
 # only run these on ubuntu vms
 confine :to, :platform => 'ubuntu'
+# vivid and above use systemd rather than upstart
+confine :except, :platform => /ubuntu-1?[v-z|5-9]/
 
 # pick any ubuntu agent
 agent = agents.first
+skip_test "No suitable hosts found" if agent.nil?
 
 def manage_service_for(pkg, state, agent)
 

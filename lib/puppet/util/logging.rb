@@ -1,9 +1,12 @@
 # A module to make logging a bit easier.
 require 'puppet/util/log'
 require 'puppet/error'
+require 'puppet/util/multi_match.rb'
+
 require 'facter'
 
-module Puppet::Util::Logging
+module Puppet::Util
+module Logging
 
   def send_log(level, message)
     Puppet::Util::Log.create({:level => level, :source => log_source, :message => message}.merge(log_metadata))
@@ -46,8 +49,44 @@ module Puppet::Util::Logging
   #    wish to log a message at all; in this case it is likely that you are only calling this method in order
   #    to take advantage of the backtrace logging.
   def log_exception(exception, message = :default, options = {})
-    err(format_exception(exception, message, Puppet[:trace] || options[:trace]))
+    trace = Puppet[:trace] || options[:trace]
+    if message == :default && exception.is_a?(Puppet::ParseErrorWithIssue)
+      # Retain all detailed info and keep plain message and stacktrace separate
+      backtrace = []
+      build_exception_trace(backtrace, exception, trace)
+      Puppet::Util::Log.create({
+          :level => :err,
+          :source => log_source,
+          :message => exception.basic_message,
+          :issue_code => exception.issue_code,
+          :backtrace => backtrace.empty? ? nil : backtrace,
+          :file => exception.file,
+          :line => exception.line,
+          :pos => exception.pos,
+          :environment => exception.environment,
+          :node => exception.node
+        }.merge(log_metadata))
+    else
+      err(format_exception(exception, message, trace))
+    end
   end
+
+  def build_exception_trace(arr, exception, trace = true)
+    if trace and exception.backtrace
+      exception.backtrace.each do |line|
+        arr << line =~ /^(.+):(\d+.*)$/ ? ("#{Pathname($1).realpath}:#{$2}" rescue line) : line
+      end
+    end
+    if exception.respond_to?(:original)
+      original =  exception.original
+      unless original.nil?
+        arr << 'Wrapped exception:'
+        arr << original.message
+        build_exception_trace(arr, original, trace)
+      end
+    end
+  end
+  private :build_exception_trace
 
   def format_exception(exception, message = :default, trace = true)
     arr = []
@@ -112,6 +151,43 @@ module Puppet::Util::Logging
     key ||= "#{file}:#{line}"
     issue_deprecation_warning(message, key, file, line, false)
   end
+  MM = MultiMatch
+  FILE_AND_LINE = MM::TUPLE
+  FILE_NO_LINE  = MM.new(MM::NOT_NIL, nil).freeze
+  NO_FILE_LINE  = MM.new(nil, MM::NOT_NIL).freeze
+
+  # Logs a (non deprecation) warning once for a given key.
+  #
+  # @param kind [String] The kind of warning. The
+  #   kind must be one of the defined kinds for the Puppet[:disable_warnings] setting.
+  # @param message [String] The message to log (logs via warning)
+  # @param key [String] Key used to make this warning unique
+  # @param file [String,nil] the File related to the warning
+  # @param line [Integer,nil] the Line number related to the warning
+  #   warning as unique
+  #
+  # Either :file and :line and/or :key must be passed.
+  def warn_once(kind, key, message, file = nil, line = nil)
+    return if Puppet[:disable_warnings].include?(kind)
+    $unique_warnings ||= {}
+    if $unique_warnings.length < 100 then
+      if (! $unique_warnings.has_key?(key)) then
+        $unique_warnings[key] = message
+        call_trace =
+        case MM.new(file, line)
+        when FILE_AND_LINE
+          "\n   (at #{file}:#{line})"
+        when FILE_NO_LINE
+          "\n   (in #{file})"
+        when NO_FILE_LINE
+          "\n   (in unknown file, line #{line})"
+        else
+          "\n   (file & line not available)"
+        end
+        warning("#{message}#{call_trace}")
+      end
+    end
+  end
 
   def get_deprecation_offender()
     # we have to put this in its own method to simplify testing; we need to be able to mock the offender results in
@@ -127,6 +203,7 @@ module Puppet::Util::Logging
   end
 
   def clear_deprecation_warnings
+    $unique_warnings.clear if $unique_warnings
     $deprecation_warnings.clear if $deprecation_warnings
   end
 
@@ -229,4 +306,5 @@ module Puppet::Util::Logging
     (is_resource? or is_resource_parameter?) and respond_to?(:path) and return path.to_s
     to_s
   end
+end
 end

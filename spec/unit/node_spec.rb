@@ -86,6 +86,41 @@ describe Puppet::Node do
                              )
       expect(node.to_pson).to validate_against('api/schemas/node.json')
     end
+
+    it "should allow its environment parameter to be set by attribute after initialization" do
+      node = Puppet::Node.new("foo", { :parameters => { 'environment' => :foo } })
+      node.environment_name = :foo
+      node.environment = :bar
+      expect(node.environment_name).to eq(:bar)
+      expect(node.parameters['environment']).to eq('bar')
+    end
+  end
+
+  describe "when serializing using yaml" do
+    before do
+      @node = Puppet::Node.new("mynode")
+    end
+
+    it "a node can roundtrip" do
+      expect(YAML.load(@node.to_yaml).name).to eql("mynode")
+    end
+
+    it "limits the serialization of environment to be just the name" do
+      # it is something like 138 when serializing everything in a default environment
+      expect(@node.to_yaml.size).to be < 70
+    end
+  end
+
+  describe "when serializing using yaml and values classes and parameters are missing in deserialized hash" do
+    it "a node can roundtrip" do
+      @node = Puppet::Node.from_data_hash({'name' => "mynode"})
+      expect(YAML.load(@node.to_yaml).name).to eql("mynode")
+    end
+
+    it "errors if name is nil" do
+      expect { Puppet::Node.from_data_hash({ })}.to raise_error(ArgumentError, /No name provided in serialized data/)
+    end
+
   end
 
   describe "when converting to json" do
@@ -217,6 +252,12 @@ describe Puppet::Node, "when merging facts" do
     @node = Puppet::Node.new("testnode", :parameters => {"one" => "a"})
     @node.fact_merge
     expect(@node.parameters["two"]).to eq("b")
+  end
+
+  it "warns when a parameter value is not updated" do
+    @node = Puppet::Node.new("testnode", :parameters => {"one" => "a"})
+    Puppet.expects(:warning).with('The node parameter \'one\' for node \'testnode\' was already set to \'a\'. It could not be set to \'b\'')
+    @node.merge "one" => "b"
   end
 
   it "accepts arbitrary parameters to merge into its parameters" do

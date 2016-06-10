@@ -33,13 +33,6 @@ require 'rbconfig'
 require 'find'
 require 'fileutils'
 require 'tempfile'
-begin
-  require 'ftools' # apparently on some system ftools doesn't get loaded
-  $haveftools = true
-rescue LoadError
-  puts "ftools not found.  Using FileUtils instead.."
-  $haveftools = false
-end
 require 'optparse'
 require 'ostruct'
 
@@ -67,21 +60,13 @@ def do_configs(configs, target, strip = 'conf/')
   Dir.mkdir(target) unless File.directory? target
   configs.each do |cf|
     ocf = File.join(InstallOptions.config_dir, cf.gsub(/#{strip}/, ''))
-    if $haveftools
-      File.install(cf, ocf, 0644, true)
-    else
-      FileUtils.install(cf, ocf, {:mode => 0644, :preserve => true, :verbose => true})
-    end
+    FileUtils.install(cf, ocf, {:mode => 0644, :preserve => true, :verbose => true})
   end
 
   if $operatingsystem == 'windows'
     src_dll = 'ext/windows/eventlog/puppetres.dll'
     dst_dll = File.join(InstallOptions.bin_dir, 'puppetres.dll')
-    if $haveftools
-      File.install(src_dll, dst_dll, 0644, true)
-    else
-      FileUtils.install(src_dll, dst_dll, {:mode => 0644, :preserve => true, :verbose => true})
-    end
+    FileUtils.install(src_dll, dst_dll, {:mode => 0644, :preserve => true, :verbose => true})
 
     require 'win32/registry'
     include Win32::Registry::Constants
@@ -110,15 +95,9 @@ def do_libs(libs, strip = 'lib/')
     next if File.directory? lf
     olf = File.join(InstallOptions.site_dir, lf.sub(/^#{strip}/, ''))
     op = File.dirname(olf)
-    if $haveftools
-      File.makedirs(op, true)
-      File.chmod(0755, op)
-      File.install(lf, olf, 0644, true)
-    else
-      FileUtils.makedirs(op, {:mode => 0755, :verbose => true})
-      FileUtils.chmod(0755, op)
-      FileUtils.install(lf, olf, {:mode => 0644, :preserve => true, :verbose => true})
-    end
+    FileUtils.makedirs(op, {:mode => 0755, :verbose => true})
+    FileUtils.chmod(0755, op)
+    FileUtils.install(lf, olf, {:mode => 0644, :preserve => true, :verbose => true})
   end
 end
 
@@ -126,15 +105,9 @@ def do_man(man, strip = 'man/')
   man.each do |mf|
     omf = File.join(InstallOptions.man_dir, mf.gsub(/#{strip}/, ''))
     om = File.dirname(omf)
-    if $haveftools
-      File.makedirs(om, true)
-      File.chmod(0755, om)
-      File.install(mf, omf, 0644, true)
-    else
-      FileUtils.makedirs(om, {:mode => 0755, :verbose => true})
-      FileUtils.chmod(0755, om)
-      FileUtils.install(mf, omf, {:mode => 0644, :preserve => true, :verbose => true})
-    end
+    FileUtils.makedirs(om, {:mode => 0755, :verbose => true})
+    FileUtils.chmod(0755, om)
+    FileUtils.install(mf, omf, {:mode => 0644, :preserve => true, :verbose => true})
     gzip = %x{which gzip}
     gzip.chomp!
     %x{#{gzip} -f #{omf}}
@@ -166,14 +139,14 @@ end
 # Prepare the file installation.
 #
 def prepare_installation
-  $operatingsystem = Facter.value :operatingsystem
-
   InstallOptions.configs = true
+  InstallOptions.check_prereqs = true
+  InstallOptions.batch_files = true
 
   # Only try to do docs if we're sure they have rdoc
   if $haverdoc
     InstallOptions.rdoc  = true
-    InstallOptions.ri  = $operatingsystem != "windows"
+    InstallOptions.ri  = true
   else
     InstallOptions.rdoc  = false
     InstallOptions.ri  = false
@@ -211,7 +184,7 @@ def prepare_installation
     opts.on('--rundir[=OPTIONAL]', 'Installation directory for state files', 'Default /var/run/puppetlabs') do |rundir|
       InstallOptions.rundir = rundir
     end
-    opts.on('--logdir[=OPTIONAL]', 'Installation directory for log files', 'Default /var/log/puppetlabs') do |logdir|
+    opts.on('--logdir[=OPTIONAL]', 'Installation directory for log files', 'Default /var/log/puppetlabs/puppet') do |logdir|
       InstallOptions.logdir = logdir
     end
     opts.on('--bindir[=OPTIONAL]', 'Installation directory for binaries', 'overrides RbConfig::CONFIG["bindir"]') do |bindir|
@@ -225,6 +198,12 @@ def prepare_installation
     end
     opts.on('--mandir[=OPTIONAL]', 'Installation directory for man pages', 'overrides RbConfig::CONFIG["mandir"]') do |mandir|
       InstallOptions.mandir = mandir
+    end
+    opts.on('--[no-]check-prereqs', 'Prevents validation of prerequisite libraries', 'Default on') do |prereq|
+      InstallOptions.check_prereqs = prereq
+    end
+    opts.on('--no-batch-files', 'Prevents installation of batch files for windows', 'Default off') do |batch_files|
+      InstallOptions.batch_files = false
     end
     opts.on('--quick', 'Performs a quick installation. Only the', 'installation is done.') do |quick|
       InstallOptions.rdoc    = false
@@ -254,6 +233,13 @@ def prepare_installation
   # These settings are appropriate defaults for all OS X versions.
   if RUBY_PLATFORM =~ /^universal-darwin[\d\.]+$/
     RbConfig::CONFIG['bindir'] = "/usr/bin"
+  end
+
+  # Here we only set $operatingsystem if we have opted to check for prereqs.
+  # Otherwise facter won't be guaranteed to be present.
+  if InstallOptions.check_prereqs
+    check_prereqs
+    $operatingsystem = Facter.value :operatingsystem
   end
 
   if not InstallOptions.configdir.nil?
@@ -299,7 +285,7 @@ def prepare_installation
   elsif $operatingsystem == "windows"
     logdir = File.join(Dir::COMMON_APPDATA, "PuppetLabs", "puppet", "var", "log")
   else
-    logdir = "/var/log/puppetlabs"
+    logdir = "/var/log/puppetlabs/puppet"
   end
 
   if not InstallOptions.bindir.nil?
@@ -395,6 +381,7 @@ end
 
 def build_ri(files)
   return unless $haverdoc
+  return if $operatingsystem == "windows"
   begin
     ri = RDoc::RDoc.new
     #ri.document(["--ri-site", "--merge"] + files)
@@ -423,40 +410,45 @@ def install_binfile(from, op_file, target)
 
   File.open(from) do |ip|
     File.open(tmp_file.path, "w") do |op|
-      op.puts "#!#{ruby}"
+      op.puts "#!#{ruby}" unless $operatingsystem == "windows"
       contents = ip.readlines
       contents.shift if contents[0] =~ /^#!/
       op.write contents.join
     end
   end
 
-  if $operatingsystem == "windows"
+  if $operatingsystem == "windows" && InstallOptions.batch_files
     installed_wrapper = false
 
-    if File.exists?("#{from}.bat")
-      FileUtils.install("#{from}.bat", File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
-      installed_wrapper = true
-    end
+    unless File.extname(from).match(/\.(cmd|bat)/)
+      if File.exists?("#{from}.bat")
+        FileUtils.install("#{from}.bat", File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
+        installed_wrapper = true
+      end
 
-    if File.exists?("#{from}.cmd")
-      FileUtils.install("#{from}.cmd", File.join(target, "#{op_file}.cmd"), :mode => 0755, :preserve => true, :verbose => true)
-      installed_wrapper = true
-    end
+      if File.exists?("#{from}.cmd")
+        FileUtils.install("#{from}.cmd", File.join(target, "#{op_file}.cmd"), :mode => 0755, :preserve => true, :verbose => true)
+        installed_wrapper = true
+      end
 
-    if not installed_wrapper
-      tmp_file2 = Tempfile.new('puppet-wrapper')
-      cwv = <<-EOS
+      if not installed_wrapper
+        tmp_file2 = Tempfile.new('puppet-wrapper')
+        cwv = <<-EOS
 @echo off
-setlocal
-set RUBY_BIN=%~dp0
-set RUBY_BIN=%RUBY_BIN:\\=/%
-"%RUBY_BIN%ruby.exe" -x "%RUBY_BIN%puppet" %*
+SETLOCAL
+if exist "%~dp0environment.bat" (
+  call "%~dp0environment.bat" %0 %*
+) else (
+  SET "PATH=%~dp0;%PATH%"
+)
+ruby.exe -S -- puppet %*
 EOS
-      File.open(tmp_file2.path, "w") { |cw| cw.puts cwv }
-      FileUtils.install(tmp_file2.path, File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
+        File.open(tmp_file2.path, "w") { |cw| cw.puts cwv }
+        FileUtils.install(tmp_file2.path, File.join(target, "#{op_file}.bat"), :mode => 0755, :preserve => true, :verbose => true)
 
-      tmp_file2.unlink
-      installed_wrapper = true
+        tmp_file2.unlink
+        installed_wrapper = true
+      end
     end
   end
   FileUtils.install(tmp_file.path, File.join(target, op_file), :mode => 0755, :preserve => true, :verbose => true)
@@ -473,13 +465,17 @@ FileUtils.cd File.dirname(__FILE__) do
   man   = glob(%w{man/man[0-9]/*})
   libs  = glob(%w{lib/**/*})
 
-  check_prereqs
   prepare_installation
+
+  if $operatingsystem == "windows"
+    windows_bins = glob(%w{ext/windows/*bat})
+  end
 
   #build_rdoc(rdoc) if InstallOptions.rdoc
   #build_ri(ri) if InstallOptions.ri
   do_configs(configs, InstallOptions.config_dir) if InstallOptions.configs
   do_bins(bins, InstallOptions.bin_dir)
+  do_bins(windows_bins, InstallOptions.bin_dir, 'ext/windows/') if $operatingsystem == "windows" && InstallOptions.batch_files
   do_libs(libs)
   do_man(man) unless $operatingsystem == "windows"
 end

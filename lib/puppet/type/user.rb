@@ -170,8 +170,10 @@ module Puppet
 
     newproperty(:comment) do
       desc "A description of the user.  Generally the user's full name."
-      munge do |v|
-        v.respond_to?(:force_encoding) ? v.force_encoding(Encoding::ASCII_8BIT) : v
+      if RUBY_VERSION < "2.1.0"
+        munge do |v|
+          v.respond_to?(:force_encoding) ? v.force_encoding(Encoding::ASCII_8BIT) : v
+        end
       end
     end
 
@@ -183,25 +185,26 @@ module Puppet
     end
 
     newproperty(:password, :required_features => :manages_passwords) do
-      desc %q{The user's password, in whatever encrypted format the local
-        system requires.
+      desc %q{The user's password, in whatever encrypted format the local system
+        requires. Consult your operating system's documentation for acceptable password
+        encryption formats and requirements.
 
-        * Most modern Unix-like systems use salted SHA1 password hashes. You can use
-          Puppet's built-in `sha1` function to generate a hash from a password.
-        * Mac OS X 10.5 and 10.6 also use salted SHA1 hashes.
-        * Mac OS X 10.7 (Lion) uses salted SHA512 hashes. The Puppet Labs [stdlib][]
-          module contains a `str2saltedsha512` function which can generate password
-          hashes for Lion.
-        * Mac OS X 10.8 and higher use salted SHA512 PBKDF2 hashes. When
-          managing passwords on these systems the salt and iterations properties
-          need to be specified as well as the password.
+        * Mac OS X 10.5 and 10.6, and some older Linux distributions, use salted SHA1
+          hashes. You can use Puppet's built-in `sha1` function to generate a salted SHA1
+          hash from a password.
+        * Mac OS X 10.7 (Lion), and many recent Linux distributions, use salted SHA512
+          hashes. The Puppet Labs [stdlib][] module contains a `str2saltedsha512` function
+          which can generate password hashes for these operating systems.
+        * OS X 10.8 and higher use salted SHA512 PBKDF2 hashes. When managing passwords
+          on these systems, the `salt` and `iterations` attributes need to be specified as
+          well as the password.
         * Windows passwords can only be managed in cleartext, as there is no Windows API
           for setting the password hash.
 
         [stdlib]: https://github.com/puppetlabs/puppetlabs-stdlib/
 
-        Be sure to enclose any value that includes a dollar sign ($) in single
-        quotes (') to avoid accidental variable interpolation.}
+        Enclose any value that includes a dollar sign ($) in single quotes (') to avoid
+        accidental variable interpolation.}
 
       validate do |value|
         raise ArgumentError, "Passwords cannot include ':'" if value.is_a?(String) and value.include?(":")
@@ -273,6 +276,38 @@ module Puppet
         end
         raise ArgumentError, "Group names must be provided as an array, not a comma-separated list." if value.include?(",")
         raise ArgumentError, "Group names must not be empty. If you want to specify \"no groups\" pass an empty array" if value.empty?
+      end
+
+      def change_to_s(currentvalue, newvalue)
+        newvalue = newvalue.split(",") if newvalue != :absent
+
+        if provider.respond_to?(:groups_to_s)
+          # for Windows ADSI
+          # de-dupe the "newvalue" when the sync event message is generated,
+          # due to final retrieve called after the resource has been modified
+          newvalue = provider.groups_to_s(newvalue).split(',').uniq
+        end
+
+        super(currentvalue, newvalue)
+      end
+
+      # override Puppet::Property::List#retrieve
+      def retrieve
+        if provider.respond_to?(:groups_to_s)
+          # Windows ADSI groups returns SIDs, but retrieve needs names
+          # must return qualified names for SIDs for "is" value and puppet resource
+          return provider.groups_to_s(provider.groups).split(',')
+        end
+
+        super
+      end
+
+      def insync?(current)
+        if provider.respond_to?(:groups_insync?)
+          return provider.groups_insync?(current, @should)
+        end
+
+        super(current)
       end
     end
 
@@ -550,14 +585,15 @@ module Puppet
     end
 
     newproperty(:salt, :required_features => :manages_password_salt) do
-      desc "This is the 32 byte salt used to generate the PBKDF2 password used in
+      desc "This is the 32-byte salt used to generate the PBKDF2 password used in
             OS X. This field is required for managing passwords on OS X >= 10.8."
     end
 
     newproperty(:iterations, :required_features => :manages_password_salt) do
       desc "This is the number of iterations of a chained computation of the
-            password hash (http://en.wikipedia.org/wiki/PBKDF2).  This parameter
-            is used in OS X. This field is required for managing passwords on OS X >= 10.8."
+            [PBKDF2 password hash](https://en.wikipedia.org/wiki/PBKDF2). This parameter
+            is used in OS X, and is required for managing passwords on OS X 10.8 and
+            newer."
 
       munge do |value|
         if value.is_a?(String) and value =~/^[-0-9]+$/

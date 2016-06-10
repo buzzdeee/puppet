@@ -71,4 +71,37 @@ describe "Defaults" do
     end
 
   end
+
+  describe 'strict' do
+    it 'should accept the valid value :off' do
+      expect {Puppet.settings[:strict] = 'off'}.to_not raise_exception
+    end
+
+    it 'should accept the valid value :warning' do
+      expect {Puppet.settings[:strict] = 'warning'}.to_not raise_exception
+    end
+
+    it 'should accept the valid value :error' do
+      expect {Puppet.settings[:strict] = 'error'}.to_not raise_exception
+    end
+
+    it 'should fail if given an invalid value' do
+      expect {Puppet.settings[:strict] = 'ignore'}.to raise_exception(/Invalid value 'ignore' for parameter strict\./)
+    end
+  end
+
+  describe 'supported_checksum_types' do
+    it 'should default to md5,sha256' do
+      expect(Puppet.settings[:supported_checksum_types]).to eq(['md5', 'sha256'])
+    end
+
+    it 'should raise an error on an unsupported checksum type' do
+      expect { Puppet.settings[:supported_checksum_types] = ['md5', 'foo'] }.to raise_exception ArgumentError, 'Unrecognized checksum types ["foo"] are not supported. Valid values are ["md5", "md5lite", "sha256", "sha256lite", "sha1", "sha1lite", "mtime", "ctime"].'
+    end
+
+    it 'should not raise an error on setting a valid list of checksum types' do
+      Puppet.settings[:supported_checksum_types] = ['sha256', 'md5lite', 'mtime']
+      expect(Puppet.settings[:supported_checksum_types]).to eq(['sha256', 'md5lite', 'mtime'])
+    end
+  end
 end

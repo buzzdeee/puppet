@@ -63,6 +63,11 @@ describe Puppet::Type.type(:service), "when validating attribute values" do
       expect(srv.should(:enable)).to eq(:false)
     end
 
+    it "should support :mask as a value" do
+      srv = Puppet::Type.type(:service).new(:name => "yay", :enable => :mask)
+      expect(srv.should(:enable)).to eq(:mask)
+    end
+
     it "should support :manual as a value on Windows" do
       Puppet.features.stubs(:microsoft_windows?).returns true
 
@@ -211,6 +216,22 @@ describe Puppet::Type.type(:service), "when changing the host" do
     @service[:enable] = false
     @service.provider.expects(:disable)
     @service.property(:enable).sync
+  end
+
+  it "should always consider the enable state of a static service to be in sync" do
+    @service.provider.class.stubs(:supports_parameter?).returns(true)
+    @service.provider.expects(:cached_enabled?).returns('static')
+    @service[:enable] = false
+    Puppet.expects(:debug).with("Unable to enable or disable static service yay")
+    expect(@service.property(:enable).insync?(:true)).to eq(true)
+  end
+
+  it "should determine insyncness normally when the service is not static" do
+    @service.provider.class.stubs(:supports_parameter?).returns(true)
+    @service.provider.expects(:cached_enabled?).returns('true')
+    @service[:enable] = true
+    Puppet.expects(:debug).never
+    expect(@service.property(:enable).insync?(:true)).to eq(true)
   end
 
   it "should sync the service's enable state when changing the state of :ensure if :enable is being managed" do

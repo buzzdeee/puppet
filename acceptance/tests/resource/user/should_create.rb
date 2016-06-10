@@ -1,4 +1,6 @@
 test_name "should create a user"
+confine :except, :platform => /^eos-/ # See ARISTA-37
+confine :except, :platform => /^cisco_/ # See PUP-5828
 
 name = "pl#{rand(999999).to_i}"
 
@@ -14,7 +16,7 @@ agents.each do |agent|
   agent.user_get(name)
 
   case agent['platform']
-  when /sles/, /solaris/, /windows/
+  when /sles/, /solaris/, /windows/, /osx/, /aix/
     # no private user groups by default
   else
     agent.group_get(name)

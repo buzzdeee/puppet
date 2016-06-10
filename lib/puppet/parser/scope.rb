@@ -174,13 +174,104 @@ class Puppet::Parser::Scope
 
   end
 
+  # @api private
+  class ParameterScope < Ephemeral
+    class Access
+      attr_accessor :value
+
+      def assigned?
+        instance_variable_defined?(:@value)
+      end
+    end
+
+    # A parameter default must be evaluated using a special scope. The scope that is given to this method must
+    # have a `ParameterScope` as its last ephemeral scope. This method will then push a `MatchScope` while the
+    # given `expression` is evaluated. The method will catch any throw of `:unevaluated_parameter` and produce
+    # an error saying that the evaluated parameter X tries to access the unevaluated parameter Y.
+    #
+    # @param name [String] the name of the currently evaluated parameter
+    # @param expression [Puppet::Parser::AST] the expression to evaluate
+    # @param scope [Puppet::Parser::Scope] a scope where a `ParameterScope` has been pushed
+    # @return [Object] the result of the evaluation
+    #
+    # @api private
+    def evaluate3x(name, expression, scope)
+      scope.with_guarded_scope do
+        bad = catch(:unevaluated_parameter) do
+          scope.new_match_scope(nil)
+          return as_read_only { expression.safeevaluate(scope) }
+        end
+        raise Puppet::Error, "default expression for $#{name} tries to illegally access not yet evaluated $#{bad}"
+      end
+    end
+
+    def evaluate(name, expression, scope, evaluator)
+      scope.with_guarded_scope do
+        bad = catch(:unevaluated_parameter) do
+          scope.new_match_scope(nil)
+          return as_read_only { evaluator.evaluate(expression, scope) }
+        end
+        raise Puppet::Error, "default expression for $#{name} tries to illegally access not yet evaluated $#{bad}"
+      end
+    end
+
+    def initialize(parent, param_names)
+      super(parent)
+      @params = {}
+      param_names.each { |name| @params[name] = Access.new }
+    end
+
+    def [](name)
+      access = @params[name]
+      return super if access.nil?
+      throw(:unevaluated_parameter, name) unless access.assigned?
+      access.value
+    end
+
+    def []=(name, value)
+      raise Puppet::Error, "Attempt to assign variable #{name} when evaluating parameters" if @read_only
+      @params[name] ||= Access.new
+      @params[name].value = value
+    end
+
+    def bound?(name)
+      @params.include?(name)
+    end
+
+    def include?(name)
+      @params.include?(name) || super
+    end
+
+    def is_local_scope?
+      true
+    end
+
+    def as_read_only
+      read_only = @read_only
+      @read_only = true
+      begin
+        yield
+      ensure
+        @read_only = read_only
+      end
+    end
+
+    def to_hash
+      Hash[@params.select {|_, access| access.assigned? }.map { |name, access| [name, access.value] }]
+    end
+  end
+
+
   # Returns true if the variable of the given name has a non nil value.
   # TODO: This has vague semantics - does the variable exist or not?
   #       use ['name'] to get nil or value, and if nil check with exist?('name')
   #       this include? is only useful because of checking against the boolean value false.
   #
   def include?(name)
-    ! self[name].nil?
+    catch(:undefined_variable) {
+      return ! self[name].nil?
+    }
+    false
   end
 
   # Returns true if the variable of the given name is set to any value (including nil)
@@ -412,16 +503,33 @@ class Puppet::Parser::Scope
     end
   end
 
+  UNDEFINED_VARIABLES_KIND = 'undefined_variables'.freeze
+  DEPRECATION_KIND = 'deprecation'.freeze
+
+  # The exception raised when a throw is uncaught is different in different versions
+  # of ruby. In >=2.2.0 it is UncaughtThrowError (which did not exist prior to this)
+  #
+  UNCAUGHT_THROW_EXCEPTION = defined?(UncaughtThrowError) ? UncaughtThrowError : ArgumentError
+
   def variable_not_found(name, reason=nil)
-    # Built in variables always exist
-    if BUILT_IN_VARS.include?(name)
+    # Built in variables and numeric variables always exist
+    if BUILT_IN_VARS.include?(name) || name =~ Puppet::Pops::Patterns::NUMERIC_VAR_NAME
       return nil
     end
-    if Puppet[:strict_variables]
-      throw :undefined_variable
-    else
-      nil
+    begin
+      throw(:undefined_variable, reason)
+    rescue  UNCAUGHT_THROW_EXCEPTION
+      case Puppet[:strict]
+      when :off
+        # do nothing
+      when :warning
+        Puppet.warn_once(UNDEFINED_VARIABLES_KIND, "Variable: #{name}",
+        "Undefined variable '#{name}'; #{reason}" )
+      when :error
+        raise ArgumentError, "Undefined variable '#{name}'; #{reason}"
+      end
     end
+    nil
   end
 
   # Retrieves the variable value assigned to the name given as an argument. The name must be a String,
@@ -484,24 +592,37 @@ class Puppet::Parser::Scope
   def lookup_qualified_variable(class_name, variable_name, position)
     begin
       if lookup_as_local_name?(class_name, variable_name)
-        self[variable_name]
+        if is_topscope?
+          # This is the case where $::x is looked up from within the topscope itself, or from a local scope
+          # parented at the top scope. In this case, the lookup must ignore local and ephemeral scopes.
+          #
+          handle_not_found(class_name, variable_name, position) unless @symtable.include?(variable_name)
+          @symtable[variable_name]
+        else
+          self[variable_name]
+        end
       else
         qualified_scope(class_name).lookupvar(variable_name, position)
       end
     rescue RuntimeError => e
-      unless Puppet[:strict_variables]
-        # Do not issue warning if strict variables are on, as an error will be raised by variable_not_found
-        location = if position[:lineproc]
-                     " at #{position[:lineproc].call}"
-                   elsif position[:file] && position[:line]
-                     " at #{position[:file]}:#{position[:line]}"
-                   else
-                     ""
-                   end
-        warning "Could not look up qualified variable '#{class_name}::#{variable_name}'; #{e.message}#{location}"
-      end
-      variable_not_found("#{class_name}::#{variable_name}", e.message)
+      handle_not_found(class_name, variable_name, position, e.message)
     end
+  end
+
+  def handle_not_found(class_name, variable_name, position, reason = nil)
+    unless Puppet[:strict_variables]
+      # Do not issue warning if strict variables are on, as an error will be raised by variable_not_found
+      location = if position[:lineproc]
+                   " at #{position[:lineproc].call}"
+                 elsif position[:file] && position[:line]
+                   " at #{position[:file]}:#{position[:line]}"
+                 else
+                   ""
+                 end
+      variable_not_found("#{class_name}::#{variable_name}", "#{reason}#{location}")
+      return nil
+    end
+    variable_not_found("#{class_name}::#{variable_name}", reason)
   end
 
   # Handles the special case of looking up fully qualified variable in not yet evaluated top scope
@@ -607,12 +728,17 @@ class Puppet::Parser::Scope
       raise Puppet::ParseError, "Attempt to assign to a reserved variable name: '#{name}'"
     end
 
+    # Check for server_facts reserved variable name if the trusted_sever_facts setting is true
+    if Puppet[:trusted_server_facts] && name == 'server_facts' && !options[:privileged]
+      raise Puppet::ParseError, "Attempt to assign to a reserved variable name: '#{name}'"
+    end
+
     table = effective_symtable(options[:ephemeral])
     if table.bound?(name)
       if options[:append]
-        error = Puppet::ParseError.new("Cannot append, variable #{name} is defined in this scope")
+        error = Puppet::ParseError.new("Cannot append, variable '$#{name}' is defined in this scope")
       else
-        error = Puppet::ParseError.new("Cannot reassign variable #{name}")
+        error = Puppet::ParseError.new("Cannot reassign variable '$#{name}'")
       end
       error.file = options[:file] if options[:file]
       error.line = options[:line] if options[:line]
@@ -634,6 +760,10 @@ class Puppet::Parser::Scope
 
   def set_facts(hash)
     setvar('facts', deep_freeze(hash), :privileged => true)
+  end
+
+  def set_server_facts(hash)
+    setvar('server_facts', deep_freeze(hash), :privileged => true)
   end
 
   # Deeply freezes the given object. The object and its content must be of the types:
@@ -715,15 +845,35 @@ class Puppet::Parser::Scope
     "Scope(#{@resource})"
   end
 
-  # remove ephemeral scope up to level
-  # TODO: Who uses :all ? Remove ??
+  alias_method :inspect, :to_s
+
+  # Pop ephemeral scopes up to level and return them
   #
+  # @deprecated use #pop_epehemeral
+  # @api private
   def unset_ephemeral_var(level=:all)
+    Puppet.deprecation_warning('Method Parser::Scope#unset_ephemeral_var() is deprecated')
     if level == :all
       @ephemeral = [ MatchScope.new(@symtable, nil)]
     else
       @ephemeral.pop(@ephemeral.size - level)
     end
+  end
+
+  # Pop ephemeral scopes up to level and return them
+  #
+  # @param level [Fixnum] a positive integer
+  # @return [Array] the removed ephemeral scopes
+  # @api private
+  def pop_ephemerals(level)
+    @ephemeral.pop(@ephemeral.size - level)
+  end
+
+  # Push ephemeral scopes onto the ephemeral scope stack
+  # @param ephemeral_scopes [Array]
+  # @api private
+  def push_ephemerals(ephemeral_scopes)
+    ephemeral_scopes.each { |ephemeral_scope| @ephemeral.push(ephemeral_scope) } unless ephemeral_scopes.nil?
   end
 
   def ephemeral_level
@@ -736,6 +886,53 @@ class Puppet::Parser::Scope
       @ephemeral.push(LocalScope.new(@ephemeral.last))
     else
       @ephemeral.push(MatchScope.new(@ephemeral.last, nil))
+    end
+  end
+
+  # Execute given block in global scope with no ephemerals present
+  #
+  # @yieldparam [Scope] global_scope the global and ephemeral less scope
+  # @return [Object] the return of the block
+  #
+  # @api private
+  def with_global_scope(&block)
+    find_global_scope.without_ephemeral_scopes(&block)
+  end
+
+  # Execute given block with all ephemeral popped from the ephemeral stack
+  #
+  # @api private
+  def without_ephemeral_scopes
+    save_ephemeral = @ephemeral
+    begin
+      @ephemeral = [ @symtable ]
+      yield(self)
+    ensure
+      @ephemeral = save_ephemeral
+    end
+  end
+
+  # Nests a parameter scope
+  # @api private
+  def with_parameter_scope(param_names)
+    param_scope = ParameterScope.new(@ephemeral.last, param_names)
+    with_guarded_scope do
+      @ephemeral.push(param_scope)
+      yield(param_scope)
+    end
+  end
+
+  # Execute given block and ensure that ephemeral level is restored
+  #
+  # @return [Object] the return of the block
+  #
+  # @api private
+  def with_guarded_scope
+    elevel = ephemeral_level
+    begin
+      yield
+    ensure
+      pop_ephemerals(elevel)
     end
   end
 
@@ -849,6 +1046,18 @@ class Puppet::Parser::Scope
         name.title.sub(/^([^:]{1,2})/, '::\1')
       end
     end
+  end
+
+  # Calls a 3.x or 4.x function by name with arguments given in an array using the 4.x calling convention
+  # and returns the result.
+  # Note that it is the caller's responsibility to rescue the given ArgumentError and provide location information
+  # to aid the user find the problem. The problem is otherwise reported against the source location that
+  # invoked the function that ultimately called this method.
+  #
+  # @return [Object] the result of the called function
+  # @raise ArgumentError if the function does not exist
+  def call_function(func_name, args, &block)
+    Puppet::Pops::Parser::EvaluatingParser.new.evaluator.external_call_function(func_name, args, self, &block)
   end
 
   private

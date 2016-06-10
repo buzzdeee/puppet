@@ -4,8 +4,6 @@ step "Ensure Git and Ruby"
 
 require 'puppet/acceptance/install_utils'
 extend Puppet::Acceptance::InstallUtils
-require 'puppet/acceptance/git_utils'
-extend Puppet::Acceptance::GitUtils
 require 'beaker/dsl/install_utils'
 extend Beaker::DSL::InstallUtils
 
@@ -38,6 +36,22 @@ PACKAGES = {
     # there isn't a need for json on windows because it is bundled in ruby 1.9
   ],
 }
+
+# override incorrect FOSS (git) defaults from Beaker with AIO applicable ones
+#
+# Remove after PUP-4867 breaks distmoduledir and sitemoduledir into individual
+# settings from modulepath and Beaker can properly introspect these settings
+hosts.each do |host|
+  platform = host['platform'] =~ /windows/ ? 'windows' : 'unix'
+
+  host['puppetbindir'] = '/usr/bin' if platform == 'windows'
+
+  # Beakers add_aio_defaults_on helper is not appropriate here as it
+  # also alters puppetbindir / privatebindir to use package installed
+  # paths rather than git installed paths
+  host['distmoduledir'] = AIO_DEFAULTS[platform]['distmoduledir']
+  host['sitemoduledir'] = AIO_DEFAULTS[platform]['sitemoduledir']
+end
 
 hosts.each do |host|
   case host['platform']
@@ -98,9 +112,9 @@ hosts.each do |host|
 
     step "#{host} Install ruby from git using revision #{revision}"
     # TODO remove this step once we are installing puppet from msi packages
-    install_from_git(host, "/opt/puppet-git-repos",
+    install_from_git_on(host, "/opt/puppet-git-repos",
                      :name => 'puppet-win32-ruby',
-                     :path => build_giturl('puppet-win32-ruby'),
+                     :path => build_git_url('puppet-win32-ruby'),
                      :rev  => revision)
     on host, 'cd /opt/puppet-git-repos/puppet-win32-ruby; cp -r ruby/* /'
     on host, 'cd /lib; icacls ruby /grant "Everyone:(OI)(CI)(RX)"'

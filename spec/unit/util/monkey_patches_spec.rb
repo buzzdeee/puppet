@@ -5,9 +5,89 @@ require 'puppet/util/monkey_patches'
 
 
 describe Symbol do
+  after :all do
+    $unique_warnings.delete('symbol_comparison') if $unique_warnings
+  end
+
+  it 'should have an equal? that is not true for a string with same letters' do
+    symbol = :undef
+    expect(symbol).to_not equal('undef')
+  end
+
+  it "should have an eql? that is not true for a string with same letters" do
+    symbol = :undef
+    expect(symbol).to_not eql('undef')
+  end
+
+  it "should have an == that is not true for a string with same letters" do
+    pending "JRuby is incompatible with MRI - Cannot test this on JRuby" if RUBY_PLATFORM == 'java'
+    symbol = :undef
+    expect(symbol == 'undef').to_not be(true)
+  end
+
   it "should return self from #intern" do
     symbol = :foo
     expect(symbol).to equal symbol.intern
+  end
+
+  describe "when :strict is off" do
+    before :each do
+      Puppet.settings[:strict] = :off
+    end
+
+    after :all do
+      Puppet.settings[:strict] = Puppet.settings.setting(:strict).default
+    end
+
+    it "should not warn if compared against another symbol" do
+      Puppet.expects(:warn_once).never
+      expect(:foo <=> :bar).to equal(1)
+    end
+
+    it "should not warn if compared against a non-symbol value" do
+      Puppet.expects(:warn_once).never
+      expect(:foo <=> "foo").to equal(0)
+    end
+  end
+
+  describe "when :strict is warning" do
+    before :each do
+      Puppet.settings[:strict] = :warning
+    end
+
+    after :all do
+      Puppet.settings[:strict] = Puppet.settings.setting(:strict).default
+    end
+
+    it "should not warn if compared against another symbol" do
+      Puppet.expects(:warn_once).never
+      expect(:foo <=> :bar).to equal(1)
+    end
+
+    it "should warn if compared against a non-symbol value" do
+      Puppet.expects(:warn_once).once
+      expect(:foo <=> "foo").to equal(0)
+    end
+  end
+
+  describe "when :strict is error" do
+    before :each do
+      Puppet.settings[:strict] = :error
+    end
+
+    after :all do
+      Puppet.settings[:strict] = Puppet.settings.setting(:strict).default
+    end
+
+    it "should not raise if compared against another symbol" do
+      Puppet.expects(:warn_once).never
+      expect(:foo <=> :bar).to equal(1)
+    end
+
+    it "should raise if compared against a non-symbol value" do
+      Puppet.expects(:warn_once).never
+      expect { :foo <=> "foo" }.to raise_error(ArgumentError, "Comparing Symbols to non-Symbol values is no longer allowed")
+    end
   end
 end
 
@@ -173,8 +253,9 @@ end
 
 
 describe OpenSSL::X509::Store, :if => Puppet::Util::Platform.windows? do
-  let(:store) { described_class.new }
-  let(:cert)  { OpenSSL::X509::Certificate.new(File.read(my_fixture('x509.pem'))) }
+  let(:store)    { described_class.new }
+  let(:cert)     { OpenSSL::X509::Certificate.new(File.read(my_fixture('x509.pem'))) }
+  let(:samecert) { cert.dup() }
 
   def with_root_certs(certs)
     Puppet::Util::Windows::RootCerts.expects(:instance).returns(certs)
@@ -186,10 +267,21 @@ describe OpenSSL::X509::Store, :if => Puppet::Util::Platform.windows? do
     store.set_default_paths
   end
 
+  it "doesn't warn when calling set_default_paths multiple times" do
+    with_root_certs([cert])
+    store.expects(:warn).never
+
+    store.set_default_paths
+    store.set_default_paths
+  end
+
   it "ignores duplicate root certs" do
-    with_root_certs([cert, cert])
+    # prove that even though certs have identical contents, their hashes differ
+    expect(cert.hash).to_not eq(samecert.hash)
+    with_root_certs([cert, samecert])
 
     store.expects(:add_cert).with(cert).once
+    store.expects(:add_cert).with(samecert).never
 
     store.set_default_paths
   end

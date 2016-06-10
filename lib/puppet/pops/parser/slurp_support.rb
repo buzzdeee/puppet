@@ -1,3 +1,5 @@
+module Puppet::Pops
+module Parser
 # This module is an integral part of the Lexer.
 # It defines the string slurping behavior - finding the string and non string parts in interpolated
 # strings, translating escape sequences in strings to their single character equivalence.
@@ -6,11 +8,14 @@
 # additional parameter passing and evaluation of conditional logic.
 # TODO: More detailed performance analysis of excessive character escaping and interpolation.
 #
-module Puppet::Pops::Parser::SlurpSupport
+module SlurpSupport
+  include LexerSupport
 
   SLURP_SQ_PATTERN  = /(?:[^\\]|^|[^\\])(?:[\\]{2})*[']/
   SLURP_DQ_PATTERN  = /(?:[^\\]|^|[^\\])(?:[\\]{2})*(["]|[$]\{?)/
   SLURP_UQ_PATTERN  = /(?:[^\\]|^|[^\\])(?:[\\]{2})*([$]\{?|\z)/
+  # unquoted, no escapes
+  SLURP_UQNE_PATTERN  = /(\$\{?|\z)/m
   SLURP_ALL_PATTERN = /.*(\z)/m
   SQ_ESCAPES = %w{ \\ ' }
   DQ_ESCAPES = %w{ \\  $ ' " r n t s u}+["\r\n", "\n"]
@@ -19,7 +24,8 @@ module Puppet::Pops::Parser::SlurpSupport
   def slurp_sqstring
     # skip the leading '
     @scanner.pos += 1
-    str = slurp(@scanner, SLURP_SQ_PATTERN, SQ_ESCAPES, :ignore_invalid_escapes) || lex_error("Unclosed quote after \"'\" followed by '#{followed_by}'")
+    str = slurp(@scanner, SLURP_SQ_PATTERN, SQ_ESCAPES, :ignore_invalid_escapes)
+    lex_error(Issues::UNCLOSED_QUOTE, :after => "\"'\"", :followed_by => followed_by) unless str
     str[0..-2] # strip closing "'" from result
   end
 
@@ -28,7 +34,7 @@ module Puppet::Pops::Parser::SlurpSupport
     last = scn.matched
     str = slurp(scn, SLURP_DQ_PATTERN, DQ_ESCAPES, false)
     unless str
-      lex_error("Unclosed quote after #{format_quote(last)} followed by '#{followed_by}'")
+      lex_error(Issues::UNCLOSED_QUOTE, :after => format_quote(last), :followed_by => followed_by)
     end
 
     # Terminator may be a single char '"', '$', or two characters '${' group match 1 (scn[1]) from the last slurp holds this
@@ -41,6 +47,7 @@ module Puppet::Pops::Parser::SlurpSupport
      scn = @scanner
      last = scn.matched
      ignore = true
+
      str = slurp(scn, @lexing_context[:uq_slurp_pattern], @lexing_context[:escapes], :ignore_invalid_escapes)
 
      # Terminator may be a single char '$', two characters '${', or empty string '' at the end of intput.
@@ -62,14 +69,19 @@ module Puppet::Pops::Parser::SlurpSupport
   def slurp(scanner, pattern, escapes, ignore_invalid_escapes)
     str = scanner.scan_until(pattern) || return
 
+    return str unless str.include?('\\')
+
+    return str.gsub!(/\\(\\|')/m, '\1') || str if escapes.equal?(SQ_ESCAPES)
+
     # Process unicode escapes first as they require getting 4 hex digits
     # If later a \u is found it is warned not to be a unicode escape
     if escapes.include?('u')
-      str.gsub!(/\\u([\da-fA-F]{4})/m) {
-        [$1.hex].pack("U")
+      str.gsub!(/\\u(?:([\da-fA-F]{4})|\{([\da-fA-F]{1,6})\})/m) {
+        [($1 || $2).hex].pack("U")
       }
     end
 
+    begin
     str.gsub!(/\\([^\r\n]|(?:\r?\n))/m) {
       ch = $1
       if escapes.include? ch
@@ -77,19 +89,31 @@ module Puppet::Pops::Parser::SlurpSupport
         when 'r'   ; "\r"
         when 'n'   ; "\n"
         when 't'   ; "\t"
-        when 's'   ; " "
+        when 's'   ; ' '
         when 'u'
-          Puppet.warning(positioned_message("Unicode escape '\\u' was not followed by 4 hex digits"))
+          lex_warning(Issues::ILLEGAL_UNICODE_ESCAPE)
           "\\u"
         when "\n"  ; ''
         when "\r\n"; ''
         else      ch
         end
       else
-        Puppet.warning(positioned_message("Unrecognized escape sequence '\\#{ch}'")) unless ignore_invalid_escapes
+        lex_warning(Issues::UNRECOGNIZED_ESCAPE, :ch => ch) unless ignore_invalid_escapes
         "\\#{ch}"
       end
     }
+    rescue ArgumentError => e
+      # A invalid byte sequence may be the result of faulty input as well, but that could not possibly
+      # have reached this far... Unfortunately there is no more specific error and a match on message is
+      # required to differentiate from other internal problems.
+      if e.message =~ /invalid byte sequence/
+        lex_error(Issues::ILLEGAL_UNICODE_ESCAPE)
+      else
+        raise e
+      end
+    end
     str
   end
+end
+end
 end

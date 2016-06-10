@@ -25,13 +25,13 @@ class Puppet::ModuleTool::Tar::Mini
   #
   # This check was mainly added to ignore 'x' and 'g' flags from the PAX
   # standard but will also ignore any other non-standard tar flags.
-  # tar format info: http://pic.dhe.ibm.com/infocenter/zos/v1r13/index.jsp?topic=%2Fcom.ibm.zos.r13.bpxa500%2Ftaf.htm
-  # pax format info: http://pic.dhe.ibm.com/infocenter/zos/v1r13/index.jsp?topic=%2Fcom.ibm.zos.r13.bpxa500%2Fpxarchfm.htm
+  # tar format info: https://pic.dhe.ibm.com/infocenter/zos/v1r13/index.jsp?topic=%2Fcom.ibm.zos.r13.bpxa500%2Ftaf.htm
+  # pax format info: https://pic.dhe.ibm.com/infocenter/zos/v1r13/index.jsp?topic=%2Fcom.ibm.zos.r13.bpxa500%2Fpxarchfm.htm
   def find_valid_files(tarfile)
     Archive::Tar::Minitar.open(tarfile).collect do |entry|
       flag = entry.typeflag
       if flag.nil? || flag =~ /[[:digit:]]/ && (0..7).include?(flag.to_i)
-        entry.name
+        entry.full_name
       else
         Puppet.debug "Invalid tar flag '#{flag}' will not be extracted: #{entry.name}"
         next

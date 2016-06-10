@@ -2,9 +2,7 @@
 require 'spec_helper'
 require 'puppet/pops'
 require 'puppet_spec/pops'
-
-# relative to this spec file (./) does not work as this file is loaded by rspec
-require File.join(File.dirname(__FILE__), '../parser/parser_rspec_helper')
+require_relative '../parser/parser_rspec_helper'
 
 describe "validating 4x" do
   include ParserRspecHelper
@@ -32,6 +30,45 @@ describe "validating 4x" do
   it 'should not raise error for variable name with underscore first in first name segment' do
     expect(validate(fqn('_aa').var())).to_not have_issue(Puppet::Pops::Issues::ILLEGAL_VAR_NAME)
     expect(validate(fqn('::_aa').var())).to_not have_issue(Puppet::Pops::Issues::ILLEGAL_VAR_NAME)
+  end
+
+  context 'with the default settings for --strict' do
+    it 'produces a warning for duplicate keyes in a literal hash' do
+      acceptor = validate(parse('{ a => 1, a => 2 }'))
+      expect(acceptor.warning_count).to eql(1)
+      expect(acceptor.error_count).to eql(0)
+      expect(acceptor).to have_issue(Puppet::Pops::Issues::DUPLICATE_KEY)
+    end
+  end
+
+  context 'with --strict set to warning' do
+    before(:each) { Puppet[:strict] = :warning }
+    it 'produces a warning for duplicate keyes in a literal hash' do
+      acceptor = validate(parse('{ a => 1, a => 2 }'))
+      expect(acceptor.warning_count).to eql(1)
+      expect(acceptor.error_count).to eql(0)
+      expect(acceptor).to have_issue(Puppet::Pops::Issues::DUPLICATE_KEY)
+    end
+  end
+
+  context 'with --strict set to error' do
+    before(:each) { Puppet[:strict] = :error }
+    it 'produces an error for duplicate keyes in a literal hash' do
+      acceptor = validate(parse('{ a => 1, a => 2 }'))
+      expect(acceptor.warning_count).to eql(0)
+      expect(acceptor.error_count).to eql(1)
+      expect(acceptor).to have_issue(Puppet::Pops::Issues::DUPLICATE_KEY)
+    end
+  end
+
+  context 'with --strict set to off' do
+    before(:each) { Puppet[:strict] = :off }
+    it 'does not produce an error or warning for duplicate keyes in a literal hash' do
+      acceptor = validate(parse('{ a => 1, a => 2 }'))
+      expect(acceptor.warning_count).to eql(0)
+      expect(acceptor.error_count).to eql(0)
+      expect(acceptor).to_not have_issue(Puppet::Pops::Issues::DUPLICATE_KEY)
+    end
   end
 
   context 'for non productive expressions' do
@@ -107,14 +144,78 @@ describe "validating 4x" do
         SOURCE
         expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::IDEM_NOT_ALLOWED_LAST)
       end
+
+      it "detects a resource declared without title in #{type} when it is the only declaration present" do
+        source = <<-SOURCE
+          #{type} nope {
+            notify { message => 'Nope' }
+          }
+        SOURCE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::RESOURCE_WITHOUT_TITLE)
+      end
+
+      it "detects a resource declared without title in #{type} when it is in between other declarations" do
+        source = <<-SOURCE
+        #{type} nope {
+            notify { succ: message => 'Nope' }
+            notify { message => 'Nope' }
+            notify { pred: message => 'Nope' }
+          }
+        SOURCE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::RESOURCE_WITHOUT_TITLE)
+      end
+
+      it "detects a resource declared without title in #{type} when it is declarated first" do
+        source = <<-SOURCE
+          #{type} nope {
+            notify { message => 'Nope' }
+            notify { pred: message => 'Nope' }
+          }
+        SOURCE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::RESOURCE_WITHOUT_TITLE)
+      end
+
+      it "detects a resource declared without title in #{type} when it is declarated last" do
+        source = <<-SOURCE
+          #{type} nope {
+            notify { succ: message => 'Nope' }
+            notify { message => 'Nope' }
+          }
+        SOURCE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::RESOURCE_WITHOUT_TITLE)
+      end
     end
   end
 
   context 'for reserved words' do
-    ['function', 'private', 'type', 'attr'].each do |word|
+    ['private', 'attr'].each do |word|
       it "produces an error for the word '#{word}'" do
         source = "$a = #{word}"
         expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::RESERVED_WORD)
+      end
+    end
+  end
+
+  context 'for future reserved words' do
+    ['application', 'produces', 'consumes'].each do |word|
+      it "produces an issue for the word '#{word}'" do
+        source = "$a = #{word}"
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::FUTURE_RESERVED_WORD)
+      end
+
+      it 'produces a warning issue when used as a class name' do
+        source = "class #{word} {}"
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::FUTURE_RESERVED_WORD)
+      end
+
+      it 'produces no warning or error when used as a parameter name' do
+        source = "define foo($#{word}) { notice $#{word} }"
+        expect(validate(parse(source)).diagnostics.empty?).to eq(true)
+      end
+
+      it 'produces no warning or error when used as an attribute name' do
+        source = "foo { bar: #{word} => ok }"
+        expect(validate(parse(source)).diagnostics.empty?).to eq(true)
       end
     end
   end
@@ -153,6 +254,67 @@ describe "validating 4x" do
     end
   end
 
+  context 'for keywords' do
+    it "should allow using the 'type' as the name of a function with no parameters" do
+      source = "type()"
+      expect(validate(parse(source))).not_to have_any_issues
+    end
+
+    it "should allow using the keyword 'type' as the name of a function with parameters" do
+      source = "type('a', 'b')"
+      expect(validate(parse(source))).not_to have_any_issues
+    end
+    it "should allow using the 'type' as the name of a function with no parameters and a block" do
+      source = "type() |$x| { $x }"
+      expect(validate(parse(source))).not_to have_any_issues
+    end
+
+    it "should allow using the keyword 'type' as the name of a function with parameters and a block" do
+      source = "type('a', 'b') |$x| { $x }"
+      expect(validate(parse(source))).not_to have_any_issues
+    end
+  end
+
+  context 'for parameter names' do
+    ['class', 'define'].each do |word|
+      it "should require that #{word} parameter names are unique" do
+        expect(validate(parse("#{word} foo($a = 10, $a = 20) {}"))).to have_issue(Puppet::Pops::Issues::DUPLICATE_PARAMETER)
+      end
+    end
+
+    it "should require that template parameter names are unique" do
+      expect(validate(parse_epp("<%-| $a, $a |-%><%= $a == doh %>"))).to have_issue(Puppet::Pops::Issues::DUPLICATE_PARAMETER)
+    end
+  end
+
+  context 'for parameter defaults' do
+    ['class', 'define'].each do |word|
+      it "should not permit assignments in #{word} parameter default expressions" do
+        expect { parse("#{word} foo($a = $x = 10) {}") }.to raise_error(Puppet::ParseErrorWithIssue, /Syntax error at '='/)
+      end
+    end
+
+    ['class', 'define'].each do |word|
+      it "should not permit assignments in #{word} parameter default nested expressions" do
+        expect(validate(parse("#{word} foo($a = [$x = 10]) {}"))).to have_issue(Puppet::Pops::Issues::ILLEGAL_ASSIGNMENT_CONTEXT)
+      end
+
+      it "should not permit assignments to subsequently declared parameters in #{word} parameter default nested expressions" do
+        expect(validate(parse("#{word} foo($a = ($b = 3), $b = 5) {}"))).to have_issue(Puppet::Pops::Issues::ILLEGAL_ASSIGNMENT_CONTEXT)
+      end
+
+      it "should not permit assignments to previously declared parameters in #{word} parameter default nested expressions" do
+        expect(validate(parse("#{word} foo($a = 10, $b = ($a = 10)) {}"))).to have_issue(Puppet::Pops::Issues::ILLEGAL_ASSIGNMENT_CONTEXT)
+      end
+
+      it "should permit assignments in #{word} parameter default inside nested lambda expressions" do
+        expect(validate(parse(
+          "#{word} foo($a = [1,2,3], $b = 0, $c = $a.map |$x| { $b = $x; $b * $a.reduce |$x, $y| {$x + $y}}) {}"))).not_to(
+          have_issue(Puppet::Pops::Issues::ILLEGAL_ASSIGNMENT_CONTEXT))
+      end
+    end
+  end
+
   context 'for reserved parameter names' do
     ['name', 'title'].each do |word|
       it "produces an error when $#{word} is used as a parameter in a class" do
@@ -177,25 +339,149 @@ describe "validating 4x" do
     end
   end
 
-  context 'top level constructs in conditionals' do
-    ['class', 'define', 'node'].each do |word|
-      it "produces an error when $#{word} is nested in an if expression" do
-        source = "if true { #{word} x {} }"
-        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::NOT_TOP_LEVEL)
+  context 'for badly formed non-numeric parameter names' do
+    ['Ateam', 'a::team'].each do |word|
+      it "produces an error when $#{word} is used as a parameter in a class" do
+        source = "class x ($#{word}) {}"
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_PARAM_NAME)
+      end
+
+      it "produces an error when $#{word} is used as a parameter in a define" do
+        source = "define x ($#{word}) {}"
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_PARAM_NAME)
+      end
+
+      it "produces an error when $#{word} is used as a parameter in a lambda" do
+        source = "with() |$#{word}| {}"
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_PARAM_NAME)
+      end
+    end
+  end
+
+  context 'top level constructs' do
+    def issue(at_top)
+      at_top ? Puppet::Pops::Issues::NOT_ABSOLUTE_TOP_LEVEL : Puppet::Pops::Issues::NOT_TOP_LEVEL
+    end
+
+    # Top level. Defines the expressions that are tested inside of other things
+    {
+      'a class' => ['class x{}', false],
+      'a define' => ['define x{}', false],
+      'a node' => ['node x{}', false],
+      'a function' => ['function x() {}', true],
+      'a type alias' => ['type A = Data', true],
+      'a type alias for a complex type' => ['type C = Hash[String[1],Integer]', true],
+      'a type definition' => ['type A {}', true]
+    }.each_pair do |word, (decl, at_top)|
+      # Nesting level. Defines how each of the top level expressions are nested in
+      # another expression
+      {
+        'a define' => ["define y{ #{decl} }", at_top],
+        'a function' => ["function y() { #{decl} }", at_top],
+        'a type definition' => ["type A { #{decl} }", at_top],
+        'an if expression' => ["if true { #{decl} }", false],
+        'an if-else expression' => ["if false {} else { #{decl} }", false],
+        'an unless' => ["unless false { #{decl} }", false]
+      }.each_pair do |nester, (source, abs_top)|
+        # Tests each top level expression in each nested expression
+        it "produces an error when #{word} is nested in #{nester}" do
+          expect(validate(parse(source))).to have_issue(issue(abs_top))
+        end
+      end
+
+      # Test that the expression can exist anywhere in a top level block
+
+      it "will allow #{word} as the only statement in a top level block" do
+        expect(validate(parse(decl))).not_to have_issue(issue(at_top))
+      end
+
+      it "will allow #{word} as the last statement in a top level block" do
+        source = "$a = 10\n#{decl}"
+        expect(validate(parse(source))).not_to have_issue(issue(at_top))
+      end
+
+      it "will allow #{word} as the first statement in a top level block" do
+        source = "#{decl}\n$a = 10"
+        expect(validate(parse(source))).not_to have_issue(issue(at_top))
+      end
+
+      it "will allow #{word} in between other statements in a top level block" do
+        source = "$a = 10\n#{decl}\n$b = 20"
+        expect(validate(parse(source))).not_to have_issue(issue(at_top))
       end
     end
 
-    ['class', 'define', 'node'].each do |word|
-      it "produces an error when $#{word} is nested in an if-else expression" do
-        source = "if false {} else { #{word} x {} }"
-        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::NOT_TOP_LEVEL)
+    context 'that are type aliases' do
+      it 'raises errors when RHS is a name that is an invalid reference' do
+        source = 'type MyInt = integer'
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_EXPRESSION)
+      end
+
+      it 'raises errors when RHS is an AccessExpression with a name that is an invalid reference on LHS' do
+        source = 'type IntegerArray = array[Integer]'
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_EXPRESSION)
       end
     end
 
-    ['class', 'define', 'node'].each do |word|
-      it "produces an error when $#{word} is nested in an unless expression" do
-        source = "unless false { #{word} x {} }"
-        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::NOT_TOP_LEVEL)
+    context 'that are type mappings' do
+      it 'accepts a valid type mapping expression' do
+        source = <<-CODE
+          type Runtime[ruby, 'MyModule::MyObject'] = MyPackage::MyObject
+          notice(true)
+        CODE
+        expect(validate(parse(source))).not_to have_any_issues
+      end
+
+      it 'accepts a valid regexp based type mapping expression' do
+        source = <<-CODE
+          type Runtime[ruby, [/^MyPackage::(\w+)$/, 'MyModule::\1']] = [/^MyModule::(\w+)$/, 'MyPackage::\1']
+          notice(true)
+        CODE
+        expect(validate(parse(source))).not_to have_any_issues
+      end
+
+      it 'raises an error when a regexp based Runtime type is paired with a Puppet Type' do
+        source = <<-CODE
+          type Runtime[ruby, [/^MyPackage::(\w+)$/, 'MyModule::\1']] = MyPackage::MyObject
+          notice(true)
+        CODE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_REGEXP_TYPE_MAPPING)
+      end
+
+      it 'raises an error when a singleton Runtime type is paired with replacement pattern' do
+        source = <<-CODE
+          type Runtime[ruby, 'MyModule::MyObject'] = [/^MyModule::(\w+)$/, 'MyPackage::\1']
+          notice(true)
+        CODE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::ILLEGAL_SINGLE_TYPE_MAPPING)
+      end
+
+      it 'raises errors unless LHS is Runtime type' do
+        source = <<-CODE
+          type Pattern[/^MyPackage::(\w+)$/, 'MyModule::\1'] = [/^MyModule::(\w+)$/, 'MyPackage::\1']
+          notice(true)
+        CODE
+        expect(validate(parse(source))).to have_issue(Puppet::Pops::Issues::UNSUPPORTED_EXPRESSION)
+      end
+    end
+  end
+
+  context "capability annotations" do
+    before(:each) { Puppet[:app_management] = true }
+    after(:each) { Puppet[:app_management] = false }
+
+    ['produces', 'consumes'].each do |word|
+      it "rejects illegal resource types in #{word} clauses" do
+        expect(validate(parse("foo produces Bar {}"))).to have_issue(Puppet::Pops::Issues::ILLEGAL_CLASSREF)
+      end
+
+      it "accepts legal resource and capability types in #{word} clauses" do
+        expect(validate(parse("Foo produces Bar {}"))).to_not have_issue(Puppet::Pops::Issues::ILLEGAL_CLASSREF)
+        expect(validate(parse("Mod::Foo produces ::Mod2::Bar {}"))).to_not have_issue(Puppet::Pops::Issues::ILLEGAL_CLASSREF)
+      end
+
+      it "rejects illegal capability types in #{word} clauses" do
+        expect(validate(parse("Foo produces bar {}"))).to have_issue(Puppet::Pops::Issues::ILLEGAL_CLASSREF)
       end
     end
   end

@@ -5,7 +5,7 @@
 #   you may not use this file except in compliance with the License.
 #   You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0
+#       https://www.apache.org/licenses/LICENSE-2.0
 #
 #   Unless required by applicable law or agreed to in writing, software
 #   distributed under the License is distributed on an "AS IS" BASIS,
@@ -41,8 +41,10 @@ Puppet::Type.type(:augeas).provide(:augeas) do
     "clearm" => [ :path, :string ],
     "touch" => [ :path ],
     "mv" => [ :path, :path ],
+    "rename" => [ :path, :string ],
     "insert" => [ :string, :string, :path ],
     "get" => [ :path, :comparator, :string ],
+    "values" => [ :path, :glob ],
     "defvar" => [ :string, :path ],
     "defnode" => [ :string, :path, :string ],
     "match" => [ :path, :glob ],
@@ -242,6 +244,54 @@ Puppet::Type.type(:augeas).provide(:augeas) do
     !!return_value
   end
 
+  # Used by the need_to_run? method to process values filters. Returns
+  # true if there is a matched value, false if otherwise
+  def process_values(cmd_array)
+    return_value = false
+
+    #validate and tear apart the command
+    fail("Invalid command: #{cmd_array.join(" ")}") if cmd_array.length < 3
+    cmd = cmd_array.shift
+    path = cmd_array.shift
+
+    # Need to break apart the clause
+    clause_array = parse_commands(cmd_array.shift)[0]
+    verb = clause_array.shift
+
+    #Get the match paths from augeas
+    result = @aug.match(path) || []
+    fail("Error trying to get path '#{path}'") if (result == -1)
+
+    #Get the values of the match paths from augeas
+    values = result.collect{|r| @aug.get(r)}
+
+    case verb
+    when "include"
+      arg = clause_array.shift
+      return_value = values.include?(arg)
+    when "not_include"
+      arg = clause_array.shift
+      return_value = !values.include?(arg)
+    when "=="
+      begin
+        arg = clause_array.shift
+        new_array = eval arg
+        return_value = (values == new_array)
+      rescue
+        fail("Invalid array in command: #{cmd_array.join(" ")}")
+      end
+    when "!="
+      begin
+        arg = clause_array.shift
+        new_array = eval arg
+        return_value = (values != new_array)
+      rescue
+        fail("Invalid array in command: #{cmd_array.join(" ")}")
+      end
+    end
+    !!return_value
+  end
+
   # Used by the need_to_run? method to process match filters. Returns
   # true if there is a match, false if otherwise
   def process_match(cmd_array)
@@ -366,6 +416,7 @@ Puppet::Type.type(:augeas).provide(:augeas) do
         begin
           case command
           when "get"; return_value = process_get(cmd_array)
+          when "values"; return_value = process_values(cmd_array)
           when "match"; return_value = process_match(cmd_array)
           end
         rescue StandardError => e
@@ -374,7 +425,7 @@ Puppet::Type.type(:augeas).provide(:augeas) do
       end
 
       unless force
-        # If we have a verison of augeas which is at least 0.3.6 then we
+        # If we have a version of augeas which is at least 0.3.6 then we
         # can make the changes now and see if changes were made.
         if return_value and versioncmp(get_augeas_version, "0.3.6") >= 0
           debug("Will attempt to save and only run if files changed")
@@ -501,6 +552,10 @@ Puppet::Type.type(:augeas).provide(:augeas) do
           when "mv", "move"
             debug("sending command '#{command}' with params #{cmd_array.inspect}")
             rv = aug.mv(cmd_array[0], cmd_array[1])
+            fail("Error sending command '#{command}' with params #{cmd_array.inspect}") if (rv == -1)
+          when "rename"
+            debug("sending command '#{command}' with params #{cmd_array.inspect}")
+            rv = aug.rename(cmd_array[0], cmd_array[1])
             fail("Error sending command '#{command}' with params #{cmd_array.inspect}") if (rv == -1)
           else fail("Command '#{command}' is not supported")
         end

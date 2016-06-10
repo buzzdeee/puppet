@@ -76,6 +76,45 @@ describe Puppet::FileServing::Metadata do
     it "should pass the checksum in the hash verbatim as the checksum's value" do
       expect(metadata.to_data_hash['checksum']['value']).to eq(metadata.checksum)
     end
+
+    describe "when a source and content_uri are set" do
+      before do
+        metadata.source = '/foo'
+        metadata.content_uri = 'puppet:///foo'
+      end
+
+      it "the data should include the path, relative_path, links, owner, group, mode, checksum, type, destination, source, and content_uri" do
+        expect(metadata.to_data_hash.keys.sort).to eq(%w{ path relative_path links owner group mode checksum type destination source content_uri }.sort)
+      end
+
+      it "should pass the source in the hash verbatim" do
+        expect(metadata.to_data_hash['source']).to eq(metadata.source)
+      end
+
+      it "should pass the content_uri in the hash verbatim" do
+        expect(metadata.to_data_hash['content_uri']).to eq(metadata.content_uri)
+      end
+    end
+
+    describe "when assigning a content_uri" do
+      it "should fail if uri is invalid" do
+        expect { metadata.content_uri = '://' }.to raise_error ArgumentError, /Could not understand URI :\/\//
+      end
+
+      it "should accept characters that require percent-encoding" do
+        uri = 'puppet:///modules/foo/files/ %:?#[]@!$&\'()*+,;='
+        metadata.content_uri = uri
+        expect(metadata.content_uri).to eq(uri)
+      end
+
+      it "should fail if uri is opaque" do
+        expect { metadata.content_uri = 'scheme:www.example.com' }.to raise_error ArgumentError, "Cannot use opaque URLs 'scheme:www.example.com'"
+      end
+
+      it "should fail if uri is not a puppet scheme" do
+        expect { metadata.content_uri = 'http://www.example.com' }.to raise_error ArgumentError, "Must use URLs of type puppet as content URI"
+      end
+    end
   end
 end
 
@@ -135,6 +174,17 @@ describe Puppet::FileServing::Metadata, :uses_checksums => true do
         it "should validate against the schema" do
           expect(metadata.to_pson).to validate_against('api/schemas/file_metadata.json')
         end
+
+        describe "when a source and content_uri are set" do
+          before do
+            metadata.source = '/foo'
+            metadata.content_uri = 'puppet:///foo'
+          end
+
+          it "should validate against the schema" do
+            expect(metadata.to_pson).to validate_against('api/schemas/file_metadata.json')
+          end
+        end
       end
 
       describe "when managing directories" do
@@ -179,7 +229,7 @@ describe Puppet::FileServing::Metadata, :uses_checksums => true do
 
       stat = Puppet::FileSystem.stat(path)
 
-      win_stat = Puppet::FileServing::Metadata::WindowsStat.new(stat, path)
+      win_stat = Puppet::FileServing::Metadata::WindowsStat.new(stat, path, :ignore)
 
       expect(win_stat.owner).to eq('S-1-5-32-544')
       expect(win_stat.group).to eq('S-1-0-0')

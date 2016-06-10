@@ -10,6 +10,7 @@ disable_pe_enterprise_mcollective_agent_classes
 initialize_temp_dirs
 
 test_name "certificate extensions available as trusted data" do
+  confine :except, :platform => /^cisco_/ # See PUP-5827
 
   agent_certnames = []
 
@@ -28,7 +29,7 @@ test_name "certificate extensions available as trusted data" do
       'environmentpath' => environments_dir,
     },
     'master' => {
-      'autosign' => '/bin/true',
+      'autosign' => true,
       'dns_alt_names' => "puppet,#{hostname},#{fqdn}",
     }
   }
@@ -91,6 +92,7 @@ test_name "certificate extensions available as trusted data" do
         :acceptable_exit_codes => [0, 2])
 
       trusted_data = YAML.load(on(agent, "cat #{get_test_file_path(agent, 'trusted.yaml')}").stdout)
+      agent_hostname, agent_domain = agent_certname.split('.', 2)
 
       step "Verify trusted data"
       assert_equal({
@@ -101,7 +103,9 @@ test_name "certificate extensions available as trusted data" do
             'pp_instance_id' => 'i-3fkva',
             '1.3.6.1.4.1.34380.1.2.1' => 'db-server',
             '1.3.6.1.4.1.34380.1.2.2' => 'webops'
-          }
+          },
+          'hostname' => agent_hostname,
+          'domain' => agent_domain
         },
         trusted_data)
     end

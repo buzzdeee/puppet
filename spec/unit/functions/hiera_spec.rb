@@ -26,16 +26,18 @@ describe 'when calling' do
       expect(hiera.call(scope, 'key')).to eql('foo_result')
     end
 
-    it 'should propagate optional default' do
-      dflt = 'the_default'
-      Hiera.any_instance.expects(:lookup).with { |*args| expect(args[1]).to be(dflt) }.returns('foo_result')
-      expect(hiera.call(scope, 'key', dflt)).to eql('foo_result')
-    end
-
     it 'should propagate optional override' do
       ovr = 'the_override'
       Hiera.any_instance.expects(:lookup).with { |*args| expect(args[3]).to be(ovr) }.returns('foo_result')
       expect(hiera.call(scope, 'key', nil, ovr)).to eql('foo_result')
+    end
+
+    it 'should return default value nil when key is not found' do
+       expect(hiera.call(scope, 'foo', nil)).to be_nil
+    end
+
+    it "should return default value '' when key is not found" do
+      expect(hiera.call(scope, 'foo', '')).to eq('')
     end
 
     it 'should use default block' do
@@ -106,7 +108,7 @@ describe 'when calling' do
 
     it 'should use the array resolution_type' do
       Hiera.any_instance.expects(:lookup).with { |*args| expect(args[4]).to be(:array) }.returns(%w[foo bar baz])
-      hiera_include.expects(:call_function).with('include', %w[foo bar baz])
+      hiera_include.expects(:call_function_with_scope).with(scope, 'include', %w[foo bar baz])
       hiera_include.call(scope, 'key', {'key' => 'foo_result'})
     end
 
@@ -116,7 +118,7 @@ describe 'when calling' do
     end
 
     it 'should use default block' do
-      hiera_include.expects(:call_function).with('include', %w[key foo])
+      hiera_include.expects(:call_function_with_scope).with(scope,'include', %w[key foo])
       hiera_include.call(scope, 'foo') { |k| ['key', k] }
     end
   end

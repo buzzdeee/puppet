@@ -46,7 +46,98 @@ describe 'the static loader' do
     end
   end
 
-  def typed_name(type, name)
-    Puppet::Pops::Loader::Loader::TypedName.new(type, name)
+  context 'provides access to resource types built into puppet' do
+    let(:loader) { loader = Puppet::Pops::Loader::StaticLoader.new() }
+
+    %w{
+      Auegas
+      Component
+      Computer
+      Cron
+      Exec
+      File
+      Filebucket
+      Group
+      Host
+      Interface
+      K5login
+      Macauthorization
+      Mailalias
+      Maillist
+      Mcx
+      Mount
+      Nagios_command
+      Nagios_contact
+      Nagios_contactgroup
+      Nagios_host
+      Nagios_hostdependency
+      Nagios_hostescalation
+      Nagios_hostescalation
+      Nagios_hostgroup
+      Nagios_service
+      Nagios_servicedependency
+      Nagios_serviceescalation
+      Nagios_serviceextinfo
+      Nagios_servicegroup
+      Nagios_timeperiod
+      Notify
+      Package
+      Resources
+      Router
+      Schedule
+      Scheduled_task
+      Selboolean
+      Selmodule
+      Service
+      Ssh_authorized_key
+      Sshkey
+      Stage
+      Tidy
+      User
+      Vlan
+      Whit
+      Yumrepo
+      Zfs
+      Zone
+      Zpool
+    }.each do |name |
+      it "such that #{name} is available" do
+        expect(loader.load(:type, name.downcase)).to be_the_type(resource_type(name))
+      end
+    end
   end
+
+  context 'provides access to app-management specific resource types built into puppet' do
+    before(:each) { Puppet[:app_management] = true }
+    after(:each) { Puppet[:app_management] = false }
+
+    let(:loader) { loader = Puppet::Pops::Loader::StaticLoader.new() }
+
+    %w{Node}.each do |name|
+      it "such that #{name} is avaiable" do
+        expect(loader.load(:type, name.downcase)).to be_the_type(resource_type(name))
+      end
+    end
+  end
+
+  def typed_name(type, name)
+    Puppet::Pops::Loader::TypedName.new(type, name)
+  end
+
+  def resource_type(name)
+    Puppet::Pops::Types::TypeFactory.resource(name)
+  end
+
+  matcher :be_the_type do |type|
+    calc = Puppet::Pops::Types::TypeCalculator.new
+
+    match do |actual|
+      calc.assignable?(actual, type) && calc.assignable?(type, actual)
+    end
+
+    failure_message do |actual|
+      "expected #{type.to_s}, but was #{actual.to_s}"
+    end
+  end
+
 end

@@ -9,6 +9,9 @@ class Puppet::Node
   # the node sources.
   extend Puppet::Indirector
 
+  # Asymmetric serialization/deserialization required in this class via to/from datahash
+  include Puppet::Util::PsychSupport
+
   # Use the node source as the indirection terminus.
   indirects :node, :terminus_setting => :node_terminus, :doc => "Where to find node information.
     A node is composed of its name, its facts, and its environment."
@@ -16,13 +19,20 @@ class Puppet::Node
   attr_accessor :name, :classes, :source, :ipaddress, :parameters, :trusted_data, :environment_name
   attr_reader :time, :facts
 
-  def self.from_data_hash(data)
-    raise ArgumentError, "No name provided in serialized data" unless name = data['name']
+  attr_reader :server_facts
 
+  ENVIRONMENT = 'environment'.freeze
+
+  def initialize_from_hash(data)
+    @name       = data['name']       || (raise ArgumentError, "No name provided in serialized data")
+    @classes    = data['classes']    || []
+    @parameters = data['parameters'] || {}
+    @environment_name = data['environment']
+  end
+
+  def self.from_data_hash(data)
     node = new(name)
-    node.classes = data['classes']
-    node.parameters = data['parameters']
-    node.environment_name = data['environment']
+    node.initialize_from_hash(data)
     node
   end
 
@@ -40,7 +50,7 @@ class Puppet::Node
     if @environment
       @environment
     else
-      if env = parameters["environment"]
+      if env = parameters[ENVIRONMENT]
         self.environment = env
       elsif environment_name
         self.environment = environment_name
@@ -62,6 +72,13 @@ class Puppet::Node
     else
       @environment = env
     end
+
+    # Keep environment_name attribute and parameter in sync if they have been set
+    unless @environment.nil?
+      @parameters[ENVIRONMENT] = @environment.name.to_s if @parameters.include?(ENVIRONMENT)
+      self.environment_name = @environment.name if instance_variable_defined?(:@environment_name)
+    end
+    @environment
   end
 
   def has_environment_instance?
@@ -86,6 +103,8 @@ class Puppet::Node
 
     @facts = options[:facts]
 
+    @server_facts = {}
+
     if env = options[:environment]
       self.environment = env
     end
@@ -108,10 +127,22 @@ class Puppet::Node
   # Merge any random parameters into our parameter list.
   def merge(params)
     params.each do |name, value|
-      @parameters[name] = value unless @parameters.include?(name)
+      if @parameters.include?(name)
+        Puppet::Util::Warnings.warnonce("The node parameter '#{name}' for node '#{@name}' was already set to '#{@parameters[name]}'. It could not be set to '#{value}'")
+      else
+        @parameters[name] = value
+      end
     end
 
-    @parameters["environment"] ||= self.environment.name.to_s
+    @parameters[ENVIRONMENT] ||= self.environment.name.to_s
+  end
+
+  def add_server_facts(facts)
+    # Append the current environment to the list of server facts
+    @server_facts = facts.merge({ "environment" => self.environment.name.to_s})
+
+    # Merge the server facts into the parameters for the node
+    merge(facts)
   end
 
   # Calculate the list of names we might use for looking

@@ -32,25 +32,19 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
 
   describe "group type :members property helpers" do
 
-    let(:user1) { stub(:account => 'user1', :domain => '.', :to_s => 'user1sid') }
-    let(:user2) { stub(:account => 'user2', :domain => '.', :to_s => 'user2sid') }
-    let(:user3) { stub(:account => 'user3', :domain => '.', :to_s => 'user3sid') }
+    let(:user1) { stub(:account => 'user1', :domain => '.', :sid => 'user1sid') }
+    let(:user2) { stub(:account => 'user2', :domain => '.', :sid => 'user2sid') }
+    let(:user3) { stub(:account => 'user3', :domain => '.', :sid => 'user3sid') }
+    let(:invalid_user) { SecureRandom.uuid }
 
     before :each do
       Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('user1').returns(user1)
       Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('user2').returns(user2)
       Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with('user3').returns(user3)
+      Puppet::Util::Windows::SID.stubs(:name_to_sid_object).with(invalid_user).returns(nil)
     end
 
     describe "#members_insync?" do
-      it "should return false when current is nil" do
-        expect(provider.members_insync?(nil, ['user2'])).to be_falsey
-      end
-
-      it "should return false when should is nil" do
-        expect(provider.members_insync?(['user1'], nil)).to be_falsey
-      end
-
       it "should return true for same lists of members" do
         expect(provider.members_insync?(['user1', 'user2'], ['user1', 'user2'])).to be_truthy
       end
@@ -63,9 +57,29 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
         expect(provider.members_insync?(['user1', 'user2', 'user2'], ['user2', 'user1', 'user1'])).to be_truthy
       end
 
+      it "should return true when current and should members are empty lists" do
+        expect(provider.members_insync?([], [])).to be_truthy
+      end
+
+      # invalid scenarios
+      #it "should return true when current and should members are nil lists" do
+      #it "should return true when current members is nil and should members is empty" do
+
+      it "should return true when current members is empty and should members is nil" do
+        expect(provider.members_insync?([], nil)).to be_truthy
+      end
+
       context "when auth_membership => true" do
         before :each do
           resource[:auth_membership] = true
+        end
+
+        it "should return false when current is nil" do
+          expect(provider.members_insync?(nil, ['user2'])).to be_falsey
+        end
+
+        it "should return false when should is nil" do
+          expect(provider.members_insync?(['user1'], nil)).to be_falsey
         end
 
         it "should return false when current contains different users than should" do
@@ -83,12 +97,24 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
         it "should return false when should user(s) are not the only items in the current" do
           expect(provider.members_insync?(['user1', 'user2'], ['user1'])).to be_falsey
         end
+
+        it "should return false when current user(s) is not empty and should is an empty list" do
+          expect(provider.members_insync?(['user1','user2'], [])).to be_falsey
+        end
       end
 
       context "when auth_membership => false" do
         before :each do
           # this is also the default
           resource[:auth_membership] = false
+        end
+
+        it "should return false when current is nil" do
+          expect(provider.members_insync?(nil, ['user2'])).to be_falsey
+        end
+
+        it "should return true when should is nil" do
+          expect(provider.members_insync?(['user1'], nil)).to be_truthy
         end
 
         it "should return false when current contains different users than should" do
@@ -105,7 +131,11 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
 
         it "should return true when current user(s) contains at least the should list" do
           expect(provider.members_insync?(['user1','user2'], ['user1'])).to be_truthy
-          end
+        end
+
+        it "should return true when current user(s) is not empty and should is an empty list" do
+          expect(provider.members_insync?(['user1','user2'], [])).to be_truthy
+        end
 
         it "should return true when current user(s) contains at least the should list, even unordered" do
           expect(provider.members_insync?(['user3','user1','user2'], ['user2','user1'])).to be_truthy
@@ -129,6 +159,12 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
       it "should return a user string like DOMAIN\\USER,DOMAIN2\\USER2" do
         expect(provider.members_to_s(['user1', 'user2'])).to eq('.\user1,.\user2')
       end
+      it "should return the username when it cannot be resolved to a SID (for the sake of resource_harness error messages)" do
+        expect(provider.members_to_s([invalid_user])).to eq("#{invalid_user}")
+      end
+      it "should return the username when it cannot be resolved to a SID (for the sake of resource_harness error messages)" do
+        expect(provider.members_to_s([invalid_user])).to eq("#{invalid_user}")
+      end
     end
   end
 
@@ -147,9 +183,9 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
       provider.group.stubs(:members).returns ['user1', 'user2']
 
       member_sids = [
-        stub(:account => 'user1', :domain => 'testcomputername'),
-        stub(:account => 'user2', :domain => 'testcomputername'),
-        stub(:account => 'user3', :domain => 'testcomputername'),
+        stub(:account => 'user1', :domain => 'testcomputername', :sid => 1),
+        stub(:account => 'user2', :domain => 'testcomputername', :sid => 2),
+        stub(:account => 'user3', :domain => 'testcomputername', :sid => 3),
       ]
 
       provider.group.stubs(:member_sids).returns(member_sids[0..1])
@@ -185,6 +221,18 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
         /Cannot create group if user 'testers' exists./ )
     end
 
+    it "should fail with an actionable message when trying to create an active directory group" do
+      resource[:name] = 'DOMAIN\testdomaingroup'
+      Puppet::Util::Windows::ADSI::User.expects(:exists?).with(resource[:name]).returns(false)
+      connection.expects(:Create)
+      connection.expects(:SetInfo).raises( WIN32OLERuntimeError.new("(in OLE method `SetInfo': )\n    OLE error code:8007089A in Active Directory\n      The specified username is invalid.\r\n\n    HRESULT error code:0x80020009\n      Exception occurred."))
+
+      expect{ provider.create }.to raise_error(
+                                       Puppet::Error,
+                                       /not able to create\/delete domain groups/
+                                   )
+    end
+
     it 'should commit a newly created group' do
       provider.group.expects( :commit )
 
@@ -193,8 +241,8 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
   end
 
   it "should be able to test whether a group exists" do
-    Puppet::Util::Windows::ADSI.stubs(:sid_uri_safe).returns(nil)
-    Puppet::Util::Windows::ADSI.stubs(:connect).returns stub('connection')
+    Puppet::Util::Windows::SID.stubs(:name_to_sid_object).returns(nil)
+    Puppet::Util::Windows::ADSI.stubs(:connect).returns stub('connection', :Class => 'Group')
     expect(provider).to be_exists
 
     Puppet::Util::Windows::ADSI.stubs(:connect).returns nil
@@ -205,6 +253,14 @@ describe Puppet::Type.type(:group).provider(:windows_adsi), :if => Puppet.featur
     connection.expects(:Delete).with('group', 'testers')
 
     provider.delete
+  end
+
+  it 'should not run commit on a deleted group' do
+    connection.expects(:Delete).with('group', 'testers')
+    connection.expects(:SetInfo).never
+
+    provider.delete
+    provider.flush
   end
 
   it "should report the group's SID as gid" do

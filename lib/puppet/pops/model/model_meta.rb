@@ -258,7 +258,7 @@ module Puppet::Pops::Model
   class CollectExpression < Expression
     contains_one_uni 'type_expr', Expression, :lowerBound => 1
     contains_one_uni 'query', QueryExpression, :lowerBound => 1
-    contains_many_uni 'operations', AttributeOperation
+    contains_many_uni 'operations', AbstractAttributeOperation
   end
 
   class Parameter < Positioned
@@ -282,9 +282,39 @@ module Puppet::Pops::Model
     contains_one_uni 'body', Expression
   end
 
+  # A function written in the Puppet Langauge
+  class FunctionDefinition < NamedDefinition
+  end
+
   # A resource type definition (a 'define' in the DSL).
   #
   class ResourceTypeDefinition < NamedDefinition
+  end
+
+  class Application < NamedDefinition
+  end
+
+  # Abstract base class for QREF named non-parameterized definitions
+  class QRefDefinition < Definition
+    abstract
+    has_attr 'name', String, :lowerBound => 1
+  end
+
+  # A type alias assignment
+  class TypeAlias < QRefDefinition
+    contains_one_uni 'type_expr', Expression
+  end
+
+  # A type mapping assignment
+  class TypeMapping < Definition
+    contains_one_uni 'type_expr', Expression
+    contains_one_uni 'mapping_expr', Expression
+  end
+
+  # A type definition
+  class TypeDefinition < QRefDefinition
+    has_attr 'parent', String
+    contains_one_uni 'body', Expression
   end
 
   # A node definition matches hosts using Strings, or Regular expressions. It may inherit from
@@ -293,6 +323,10 @@ module Puppet::Pops::Model
   class NodeDefinition < Definition
     contains_one_uni 'parent', Expression
     contains_many_uni 'host_matches', Expression, :lowerBound => 1
+    contains_one_uni 'body', Expression
+  end
+
+  class SiteDefinition < Definition
     contains_one_uni 'body', Expression
   end
 
@@ -463,15 +497,18 @@ module Puppet::Pops::Model
     has_attr 'value', String, :lowerBound => 1
   end
 
-  # Represents a parsed reserved word
+  # Represents a parsed reserved word. If the 'future' attribute is true
+  # the ReserwedWord functions as a deprecation warning + string value
+  #
   class ReservedWord < LiteralValue
     has_attr 'word', String, :lowerBound => 1
+    has_attr 'future', Boolean
   end
 
   # A DSL CLASSREF (one or multiple parts separated by '::' where (at least) the first part starts with an upper case letter).
   #
   class QualifiedReference < LiteralValue
-    has_attr 'value', String, :lowerBound => 1
+    has_attr 'cased_value', String, :lowerBound => 1
   end
 
   # A Variable expression looks up value of expr (some kind of name) in scope.
@@ -525,6 +562,14 @@ module Puppet::Pops::Model
   class ResourceExpression < AbstractResource
     contains_one_uni 'type_name', Expression, :lowerBound => 1
     contains_many_uni 'bodies', ResourceBody
+  end
+
+  class CapabilityMapping < Definition
+    # 'produces' or 'consumes'
+    has_attr 'kind', String, :lowerBound => 1
+    has_attr 'capability', String, :lowerBound => 1
+    contains_one_uni 'component', Expression, :lowerBound => 1
+    contains_many_uni 'mappings', AbstractAttributeOperation
   end
 
   # A resource defaults sets defaults for a resource type. This class inherits from AbstractResource

@@ -120,12 +120,12 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     it 'produces an Integer[1]' do
       expr = fqr('Integer')[1]
-      expect(evaluate(expr)).to eql(range(1,1))
+      expect(evaluate(expr)).to eql(range(1,:default))
     end
 
-    it 'produces an Integer[from, <from]' do
+    it 'gives an error for Integer[from, <from]' do
       expr = fqr('Integer')[1,0]
-      expect(evaluate(expr)).to eql(range(1,0))
+      expect{evaluate(expr)}.to raise_error(/'from' must be less or equal to 'to'/)
     end
 
     it 'produces an error for Integer[] if there are more than 2 keys' do
@@ -146,17 +146,17 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     it 'produces a Float[1.0]' do
       expr = fqr('Float')[1.0]
-      expect(evaluate(expr)).to eql(float_range(1.0,1.0))
+      expect(evaluate(expr)).to eql(float_range(1.0,:default))
     end
 
     it 'produces a Float[1]' do
       expr = fqr('Float')[1]
-      expect(evaluate(expr)).to eql(float_range(1.0,1.0))
+      expect(evaluate(expr)).to eql(float_range(1.0,:default))
     end
 
-    it 'produces a Float[from, <from]' do
+    it 'gives an error for Float[from, <from]' do
       expr = fqr('Float')[1.0,0.0]
-      expect(evaluate(expr)).to eql(float_range(1.0,0.0))
+      expect{evaluate(expr)}.to raise_error(/'from' must be less or equal to 'to'/)
     end
 
     it 'produces an error for Float[] if there are more than 2 keys' do
@@ -166,6 +166,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     # Hash Type
     #
+    it 'produces a Hash[0, 0] from the expression Hash[0, 0]' do
+      expr = fqr('Hash')[0, 0]
+      expect(evaluate(expr)).to be_the_type(types.hash_of(types.default, types.default, types.range(0, 0)))
+    end
+
     it 'produces a Hash[Scalar,String] from the expression Hash[Scalar, String]' do
       expr = fqr('Hash')[fqr('Scalar'), fqr('String')]
       expect(evaluate(expr)).to be_the_type(types.hash_of(types.string, types.scalar))
@@ -192,6 +197,15 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     # Array Type
     #
+    it 'produces an Array[0, 0] from the expression Array[0, 0]' do
+      expr = fqr('Array')[0, 0]
+      expect(evaluate(expr)).to be_the_type(types.array_of(types.default, types.range(0, 0)))
+
+      # arguments are flattened
+      expr = fqr('Array')[[fqr('String')]]
+      expect(evaluate(expr)).to be_the_type(types.array_of(types.string))
+    end
+
     it 'produces an Array[String] from the expression Array[String]' do
       expr = fqr('Array')[fqr('String')]
       expect(evaluate(expr)).to be_the_type(types.array_of(types.string))
@@ -208,13 +222,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     it 'produces a size constrained Array when the last two arguments specify this' do
       expr = fqr('Array')[fqr('String'), 1]
-      expected_t = types.array_of(String)
-      types.constrain_size(expected_t, 1, :default)
+      expected_t = types.array_of(String, types.range(1, :default))
       expect(evaluate(expr)).to be_the_type(expected_t)
 
       expr = fqr('Array')[fqr('String'), 1, 2]
-      expected_t = types.array_of(String)
-      types.constrain_size(expected_t, 1, 2)
+      expected_t = types.array_of(String, types.range(1, 2))
       expect(evaluate(expr)).to be_the_type(expected_t)
     end
 
@@ -227,11 +239,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
     #
     it 'produces a Tuple[String] from the expression Tuple[String]' do
       expr = fqr('Tuple')[fqr('String')]
-      expect(evaluate(expr)).to be_the_type(types.tuple(String))
+      expect(evaluate(expr)).to be_the_type(types.tuple([String]))
 
       # arguments are flattened
       expr = fqr('Tuple')[[fqr('String')]]
-      expect(evaluate(expr)).to be_the_type(types.tuple(String))
+      expect(evaluate(expr)).to be_the_type(types.tuple([String]))
     end
 
     it "Tuple parameterization gives an error if parameter is not a type" do
@@ -241,13 +253,11 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
 
     it 'produces a varargs Tuple when the last two arguments specify size constraint' do
       expr = fqr('Tuple')[fqr('String'), 1]
-      expected_t = types.tuple(String)
-      types.constrain_size(expected_t, 1, :default)
+      expected_t = types.tuple([String], types.range(1, :default))
       expect(evaluate(expr)).to be_the_type(expected_t)
 
       expr = fqr('Tuple')[fqr('String'), 1, 2]
-      expected_t = types.tuple(String)
-      types.constrain_size(expected_t, 1, 2)
+      expected_t = types.tuple([String], types.range(1, 2))
       expect(evaluate(expr)).to be_the_type(expected_t)
     end
 
@@ -398,6 +408,31 @@ describe 'Puppet::Pops::Evaluator::EvaluatorImpl/AccessOperator' do
     it 'gives an error if resource is not found' do
       expr = fqr('File')[fqn('x')][fqn('y')]
       expect {evaluate(expr)}.to raise_error(/Resource not found: File\['x'\]/)
+    end
+
+    # NotUndef Type
+    #
+    it 'produces a NotUndef instance' do
+      type_expr = fqr('NotUndef')
+      expect(evaluate(type_expr)).to eql(Puppet::Pops::Types::TypeFactory.not_undef())
+    end
+
+    it 'produces a NotUndef instance with contained type' do
+      type_expr = fqr('NotUndef')[fqr('Integer')]
+      tf = Puppet::Pops::Types::TypeFactory
+      expect(evaluate(type_expr)).to eql(tf.not_undef(tf.integer))
+    end
+
+    it 'produces a NotUndef instance with String type when given a literal String' do
+      type_expr = fqr('NotUndef')[literal('hey')]
+      tf = Puppet::Pops::Types::TypeFactory
+      expect(evaluate(type_expr)).to be_the_type(tf.not_undef(tf.string(nil, 'hey')))
+    end
+
+    it 'Produces Optional instance with String type when using a String argument' do
+      type_expr = fqr('Optional')[literal('hey')]
+      tf = Puppet::Pops::Types::TypeFactory
+      expect(evaluate(type_expr)).to be_the_type(tf.optional(tf.string(nil, 'hey')))
     end
 
     # Type Type

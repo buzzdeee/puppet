@@ -2,6 +2,9 @@ test_name "concurrent catalog requests (PUP-2659)"
 
 # we're only testing the effects of loading a master with concurrent requests
 confine :except, :platform => 'windows'
+confine :except, :platform => /osx/ # see PUP-4820
+confine :except, :platform => 'solaris'
+confine :except, :platform => 'aix'
 
 step "setup a manifest"
 
@@ -84,7 +87,7 @@ with_puppet_running_on(master, master_opts, testdir) do
           sleep $sleep_for
           url='https://#{master}:8140/puppet/v3/catalog/#{agent_cert}?environment=production'
           echo "Curling: $url"
-          curl --tlsv1 -v -# -H 'Accept: text/pson' --cert #{cert_path} --key #{key_path} --cacert #{cacert_path} $url
+          env PATH="#{agent[:privatebindir]}:$PATH" curl --tlsv1 -v -# -H 'Accept: text/pson' --cert #{cert_path} --key #{key_path} --cacert #{cacert_path} $url
           echo "$PPID Completed"
         ) > "#{agent_tmpdir}/catalog-request-$i.out" 2>&1 &
         echo "Launched $!"
